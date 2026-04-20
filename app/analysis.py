@@ -336,9 +336,16 @@ def filter_data(df_raw, df_meta,
                 min_chain=0,
                 max_unsat=99,
                 remove_blank=False,
-                blank_threshold=0.05):
+                blank_threshold=0.05,
+                blank_keywords=None):
     """
     Filter the raw DataFrame based on metadata criteria.
+
+    Parameters
+    ----------
+    blank_keywords : list[str] | None
+        If provided, any sample column whose name contains any keyword
+        (case-insensitive) is dropped before analysis (e.g. ["RAJU", "blank"]).
 
     Returns
     -------
@@ -364,7 +371,16 @@ def filter_data(df_raw, df_meta,
     dr = df_raw[df_raw["Sample Name"].isin(keep)].copy()
     dm = dm[dm["Sample Name"].isin(set(dr["Sample Name"]))].copy()
 
-    # Remove blank columns (samples)
+    # Remove blank columns by name keyword
+    if blank_keywords:
+        kws = [k.strip().lower() for k in blank_keywords if k.strip()]
+        if kws:
+            num_cols = [c for c in dr.columns if c != "Sample Name"]
+            drop_cols = [c for c in num_cols
+                         if any(kw in c.lower() for kw in kws)]
+            dr = dr.drop(columns=drop_cols, errors="ignore")
+
+    # Remove blank columns (samples) by signal threshold
     if remove_blank and not dr.empty:
         num_cols = [c for c in dr.columns if c != "Sample Name"]
         col_sums = dr[num_cols].sum(axis=0)
@@ -1119,3 +1135,587 @@ def plot_odd_chain_bar(odd_frac_df, title="Odd-Chain Lipid Fraction by Cohort"):
     ax.set_xticklabels(cohorts, rotation=30, ha="right")
     ax.set_ylim(0, max(values * 100) * 1.25 + 2 if values.max() > 0 else 10)
     fig.tight_layout(); return fig
+
+
+# ===========================================================================
+# NEW FEATURES — Phase 1–4 additions (all additive, no existing code changed)
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# XLS / XLSX aware loader
+# ---------------------------------------------------------------------------
+
+def load_file_any_format(path, skip_rows=0):
+    """Read CSV, XLS or XLSX into a raw DataFrame (dtype=str)."""
+    ext = str(path).lower().split(".")[-1]
+    if ext in ("xls", "xlsx"):
+        return pd.read_excel(path, dtype=str, skiprows=skip_rows, engine="openpyxl")
+    return pd.read_csv(path, dtype=str, skiprows=skip_rows)
+
+
+def load_and_deduplicate_data_v2(file_infos, idx_col=None, num_idx=0, skip_rows=0):
+    """
+    Like load_and_deduplicate_data but also handles XLS/XLSX.
+    Drop-in replacement when XLSX files are uploaded.
+    """
+    dfs = []
+    for fi in file_infos:
+        path = fi["datapath"] if isinstance(fi, dict) else fi
+        try:
+            df = load_file_any_format(path, skip_rows=skip_rows)
+
+            actual_idx_col = None
+            if idx_col and str(idx_col).strip() and str(idx_col).strip() in df.columns:
+                actual_idx_col = str(idx_col).strip()
+            else:
+                actual_idx_col = df.columns[0]
+
+            if num_idx > 0:
+                cols_to_drop = list(df.columns[:num_idx])
+                if actual_idx_col in cols_to_drop:
+                    cols_to_drop.remove(actual_idx_col)
+                df.drop(columns=cols_to_drop, inplace=True, errors="ignore")
+
+            df.set_index(actual_idx_col, inplace=True)
+            df.index.name = "Sample Name"
+            dfs.append(df.reset_index())
+        except Exception:
+            continue
+
+    if not dfs:
+        return pd.DataFrame()
+
+    combined = pd.concat(dfs, axis=0, ignore_index=True)
+    combined.columns = deduplicate_columns(list(combined.columns))
+    for col in combined.columns[1:]:
+        combined[col] = pd.to_numeric(combined[col], errors="coerce").fillna(0)
+    return combined
+
+
+# ---------------------------------------------------------------------------
+# Multiple testing corrections
+# ---------------------------------------------------------------------------
+
+def bonferroni_correction(pvals, alpha=0.05):
+    """Bonferroni multiple-testing correction."""
+    pvals = np.asarray(pvals, dtype=float)
+    m = len(pvals)
+    if m == 0:
+        return {"reject": np.array([], dtype=bool),
+                "p_adjusted": np.array([]), "thresholds": []}
+    p_adjusted = np.clip(pvals * m, 0, 1)
+    reject = p_adjusted <= alpha
+    thresholds = [alpha / m] * m
+    return {"reject": reject, "p_adjusted": p_adjusted, "thresholds": thresholds}
+
+
+def benjamini_hochberg_correction(pvals, alpha=0.05):
+    """Benjamini-Hochberg FDR correction."""
+    pvals = np.asarray(pvals, dtype=float)
+    m = len(pvals)
+    if m == 0:
+        return {"reject": np.array([], dtype=bool),
+                "p_adjusted": np.array([]), "thresholds": []}
+    order = np.argsort(pvals)
+    p_sorted = pvals[order]
+    p_adj_sorted = np.minimum(1, p_sorted * m / (np.arange(m) + 1))
+    for i in range(m - 2, -1, -1):
+        p_adj_sorted[i] = min(p_adj_sorted[i], p_adj_sorted[i + 1])
+    p_adjusted = np.empty(m)
+    p_adjusted[order] = p_adj_sorted
+    reject = p_adjusted <= alpha
+    thresholds = (alpha * (np.arange(m) + 1) / m).tolist()
+    return {"reject": reject, "p_adjusted": p_adjusted, "thresholds": thresholds}
+
+
+def _apply_correction(pvals, alpha, method):
+    """Dispatch multiple-testing correction by name."""
+    if method == "bonferroni":
+        return bonferroni_correction(pvals, alpha)
+    if method == "bh":
+        return benjamini_hochberg_correction(pvals, alpha)
+    return holm_sidak_correction(pvals, alpha)
+
+
+def statistical_analysis_v2(df_meta, df_p, df_cohort, var, alpha=0.05,
+                             correction="holm_sidak"):
+    """
+    One-way ANOVA + pairwise post-hoc with selectable multiple-testing correction.
+    correction: 'holm_sidak' | 'bonferroni' | 'bh'
+    """
+    import statsmodels.formula.api as smf
+    import statsmodels.api as sm
+
+    if df_meta.empty or df_cohort.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    dc = df_cohort.reset_index()
+    merged = df_meta.merge(dc, on="Sample Name")
+    cohort_cols = list(df_cohort.columns)
+    df_long = merged.melt(
+        id_vars=["Sample Name", var],
+        value_vars=cohort_cols,
+        var_name="Cohort",
+        value_name="Abundance",
+    )
+
+    levels = df_long[var].dropna().unique()
+    anova_rows = []
+    posthoc_rows = []
+
+    for lvl in levels:
+        sub = df_long[df_long[var] == lvl]
+        groups = sub.groupby("Cohort")["Abundance"].apply(list)
+        if groups.shape[0] < 2:
+            anova_rows.append({"level": lvl, "F": np.nan, "PR(>F)": np.nan,
+                               "n_groups": groups.shape[0]})
+            continue
+
+        try:
+            model     = smf.ols("Abundance ~ C(Cohort)", data=sub).fit()
+            aov_table = sm.stats.anova_lm(model, typ=2)
+            F    = aov_table.loc["C(Cohort)", "F"]     if "C(Cohort)" in aov_table.index else np.nan
+            pval = aov_table.loc["C(Cohort)", "PR(>F)"] if "C(Cohort)" in aov_table.index else np.nan
+        except Exception:
+            try:
+                grp_lists = [g for _, g in sub.groupby("Cohort")["Abundance"]]
+                F, pval = stats.f_oneway(*grp_lists)
+            except Exception:
+                F, pval = np.nan, np.nan
+
+        anova_rows.append({"level": lvl, "F": F, "PR(>F)": pval,
+                           "n_groups": groups.shape[0]})
+
+        if np.isnan(pval) or pval > alpha:
+            continue
+
+        cohort_names = groups.index.tolist()
+        pvals_list, pairs, tstats = [], [], []
+        for i in range(len(cohort_names)):
+            for j in range(i + 1, len(cohort_names)):
+                g1, g2 = groups[cohort_names[i]], groups[cohort_names[j]]
+                try:
+                    t, p = stats.ttest_ind(g1, g2, equal_var=False, nan_policy="omit")
+                except Exception:
+                    t, p = np.nan, np.nan
+                pvals_list.append(p)
+                pairs.append((cohort_names[i], cohort_names[j]))
+                tstats.append(t)
+
+        if pvals_list:
+            res        = _apply_correction(pvals_list, alpha, correction)
+            p_adjusted = res["p_adjusted"]
+            reject     = res["reject"]
+            for k, (c1, c2) in enumerate(pairs):
+                posthoc_rows.append({
+                    var: lvl,
+                    "Group1": c1, "Group2": c2,
+                    "t-stat": tstats[k],
+                    "pval":   pvals_list[k],
+                    "p_adj":  p_adjusted[k],
+                    "reject": bool(reject[k]),
+                })
+
+    anova_df   = pd.DataFrame(anova_rows)
+    posthoc_df = pd.DataFrame(posthoc_rows)
+
+    if not anova_df.empty and "PR(>F)" in anova_df.columns:
+        anova_df = anova_df.sort_values("PR(>F)")
+    if not posthoc_df.empty and "p_adj" in posthoc_df.columns:
+        posthoc_df = posthoc_df.sort_values("p_adj")
+
+    return anova_df, posthoc_df
+
+
+# ---------------------------------------------------------------------------
+# PCA with replicate points + 95% confidence ellipses
+# ---------------------------------------------------------------------------
+
+def plot_pca_2d_replicates(df_p, df_exps):
+    """
+    PCA on per-replicate data with individual points coloured by mutation and
+    95% confidence ellipses around each mutation cluster.
+    """
+    fig, ax = plt.subplots(figsize=(8, 6))
+    if df_p is None or df_p.empty or df_exps is None or df_exps.empty:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center")
+        return fig
+
+    exp_cols = [c for c in df_p.columns if c != "Sample Name"]
+    if len(exp_cols) < 2:
+        ax.text(0.5, 0.5, "Need ≥2 experiments for PCA", ha="center", va="center")
+        return fig
+
+    X = df_p[exp_cols].T.values  # n_experiments × n_lipids
+    mut_map = dict(zip(df_exps["Exp"], df_exps["Mutation"]))
+    mutations_per_exp = [mut_map.get(e, e) for e in exp_cols]
+
+    n_components = min(2, X.shape[0], X.shape[1])
+    if n_components < 2:
+        ax.text(0.5, 0.5, "Not enough data for 2-component PCA",
+                ha="center", va="center")
+        return fig
+
+    try:
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        pca = PCA(n_components=2)
+        scores = pca.fit_transform(X_scaled)
+    except Exception as e:
+        ax.text(0.5, 0.5, f"PCA error: {e}", ha="center", va="center", fontsize=8)
+        return fig
+
+    unique_muts = list(dict.fromkeys(mutations_per_exp))
+    colors = {m: COHORT_COLORS[i % len(COHORT_COLORS)] for i, m in enumerate(unique_muts)}
+    var_exp = pca.explained_variance_ratio_
+
+    ax.set_xlabel(f"PC1 ({var_exp[0]*100:.1f}%)")
+    ax.set_ylabel(f"PC2 ({var_exp[1]*100:.1f}%)")
+    ax.set_title("PCA — Replicate Scatter with 95% Confidence Ellipses")
+    ax.axhline(0, color="grey", lw=0.5, ls="--")
+    ax.axvline(0, color="grey", lw=0.5, ls="--")
+
+    for mut in unique_muts:
+        idx = [i for i, m in enumerate(mutations_per_exp) if m == mut]
+        xs = scores[idx, 0]
+        ys = scores[idx, 1]
+        col = colors[mut]
+        ax.scatter(xs, ys, color=col, s=80, label=mut,
+                   edgecolors="white", linewidths=0.8, zorder=3)
+        for k, (xi, yi) in enumerate(zip(xs, ys)):
+            ax.annotate(exp_cols[idx[k]], (xi, yi),
+                        fontsize=6, xytext=(4, 2), textcoords="offset points",
+                        color="grey")
+        if len(xs) >= 2:
+            confidence_ellipse(xs, ys, ax, n_std=1.96,
+                               edgecolor=col, linewidth=1.5, linestyle="--")
+
+    ax.legend(fontsize=8, bbox_to_anchor=(1.01, 1), loc="upper left")
+    fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Gaussian curve fitting on chain length histogram
+# ---------------------------------------------------------------------------
+
+def _gaussian(x, amp, mu, sigma):
+    sigma = max(abs(sigma), 1e-6)
+    return amp * np.exp(-((x - mu) ** 2) / (2 * sigma ** 2))
+
+
+def _double_gaussian(x, a1, m1, s1, a2, m2, s2):
+    return _gaussian(x, a1, m1, s1) + _gaussian(x, a2, m2, s2)
+
+
+def plot_cl_gaussian_fit(long_df):
+    """
+    Weighted chain length histogram per cohort with Gaussian curve fitting overlay.
+    Tries double-Gaussian first, falls back to single.
+    """
+    from scipy.optimize import curve_fit
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    if long_df is None or long_df.empty:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center")
+        return fig
+
+    cohorts = long_df["Mutation"].unique()
+    pal = sns.color_palette("tab10", n_colors=len(cohorts))
+    all_cl = long_df["Acyl Chain Length"].dropna().astype(int)
+    if all_cl.empty:
+        ax.text(0.5, 0.5, "No chain length data", ha="center", va="center")
+        return fig
+
+    bins = np.arange(all_cl.min(), all_cl.max() + 2)
+    x_fine = np.linspace(bins[0], bins[-1], 300)
+
+    for i, cohort in enumerate(cohorts):
+        sub = long_df[long_df["Mutation"] == cohort]
+        if sub["Abundance"].sum() == 0:
+            continue
+        cl_vals = sub["Acyl Chain Length"].astype(int).values
+        weights = sub["Abundance"].values
+        hist, edges = np.histogram(cl_vals, bins=bins, weights=weights, density=True)
+        centers = (edges[:-1] + edges[1:]) / 2
+        col = pal[i]
+        ax.bar(centers, hist, width=0.7, color=col, alpha=0.25, label=None)
+
+        try:
+            mu_est = np.average(centers, weights=hist + 1e-12)
+            sig_est = max(np.sqrt(np.average((centers - mu_est) ** 2,
+                                             weights=hist + 1e-12)), 1.0)
+            p0_d = [hist.max() * 0.6, mu_est - sig_est, sig_est,
+                    hist.max() * 0.4, mu_est + sig_est, sig_est]
+            popt, _ = curve_fit(_double_gaussian, centers, hist, p0=p0_d, maxfev=5000)
+            ax.plot(x_fine, _double_gaussian(x_fine, *popt),
+                    color=col, lw=2, label=f"{cohort} fit")
+            ax.axvline(popt[1], color=col, ls=":", lw=1, alpha=0.7)
+            ax.axvline(popt[4], color=col, ls=":", lw=1, alpha=0.7)
+        except Exception:
+            try:
+                mu_est = np.average(centers, weights=hist + 1e-12)
+                sig_est = max(np.sqrt(np.average(
+                    (centers - mu_est) ** 2, weights=hist + 1e-12)), 1.0)
+                popt1, _ = curve_fit(_gaussian, centers, hist,
+                                     p0=[hist.max(), mu_est, sig_est], maxfev=3000)
+                ax.plot(x_fine, _gaussian(x_fine, *popt1),
+                        color=col, lw=2,
+                        label=f"{cohort} (μ={popt1[1]:.1f})")
+            except Exception:
+                ax.plot(centers, hist, color=col, lw=1.5,
+                        label=f"{cohort} (no fit)")
+
+    ax.set_xlabel("Acyl Chain Length")
+    ax.set_ylabel("Density (weighted)")
+    ax.set_title("Chain Length Distribution — Gaussian Fit")
+    ax.legend(fontsize=7)
+    fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Chain length distribution outlier identification
+# ---------------------------------------------------------------------------
+
+def identify_cl_outliers(cl_data_dict):
+    """
+    Rank cohorts by Jensen-Shannon divergence from the mean chain length
+    distribution. Most-divergent cohorts are flagged as outliers.
+
+    Returns
+    -------
+    pd.DataFrame  cols = ['Cohort', 'JS_Divergence', 'Rank']
+    """
+    prop = cl_data_dict.get("cohort_prop") if cl_data_dict else None
+    if prop is None or prop.empty:
+        return pd.DataFrame()
+
+    from scipy.spatial.distance import jensenshannon
+
+    df = prop.fillna(0).copy()
+    mean_dist = df.mean(axis=1).values
+    total = mean_dist.sum()
+    mean_dist = mean_dist / total if total > 0 else mean_dist
+
+    rows = []
+    for col in df.columns:
+        q = df[col].values
+        q_total = q.sum()
+        q = q / q_total if q_total > 0 else q
+        js = float(jensenshannon(mean_dist, q) ** 2)
+        rows.append({"Cohort": col, "JS_Divergence": round(js, 5)})
+
+    out = pd.DataFrame(rows).sort_values("JS_Divergence", ascending=False)
+    out["Rank"] = range(1, len(out) + 1)
+    return out.reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Odd-chain length KDE (distribution of odd chain lengths only)
+# ---------------------------------------------------------------------------
+
+def plot_odd_chain_kde(df_meta, df_p):
+    """
+    KDE of chain length values restricted to odd-chain lipids, per mutation.
+    """
+    fig, ax = plt.subplots(figsize=(8, 4))
+    if df_meta is None or df_meta.empty or df_p is None or df_p.empty:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center")
+        return fig
+
+    odd_names = df_meta.loc[
+        df_meta["Acyl Chain Length"] % 2 == 1, "Sample Name"
+    ].values
+
+    dp_odd = df_p[df_p["Sample Name"].isin(odd_names)].copy()
+    if dp_odd.empty:
+        ax.text(0.5, 0.5, "No odd-chain lipids found", ha="center", va="center")
+        return fig
+
+    dm_odd = df_meta[df_meta["Sample Name"].isin(odd_names)]
+    exp_cols = [c for c in dp_odd.columns if c != "Sample Name"]
+    long_df = dm_odd.merge(dp_odd, on="Sample Name").melt(
+        id_vars=["Sample Name", "Acyl Chain Length"],
+        value_vars=exp_cols,
+        var_name="Mutation", value_name="Abundance"
+    )
+    plt.close(fig)  # close blank figure before returning new one
+    return plot_kde_histogram(
+        long_df, "Acyl Chain Length", "Mutation",
+        "Odd-Chain Lipids — Chain Length KDE",
+        "Acyl Chain Length (odd only)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-bin (point-wise) statistical testing
+# ---------------------------------------------------------------------------
+
+def pointwise_stat_test(df_meta, df_p, var, control_mtn, alpha=0.05,
+                        correction="holm_sidak"):
+    """
+    For each unique level of `var`, run Welch t-test vs control and correct.
+
+    Returns
+    -------
+    pd.DataFrame  cols = [var, 'Cohort', 't-stat', 'pval', 'p_adj', 'significant']
+    """
+    if df_meta.empty or df_p.empty or not control_mtn:
+        return pd.DataFrame()
+
+    df = df_meta[["Sample Name", var]].merge(df_p, on="Sample Name")
+    exp_cols = [c for c in df_p.columns if c != "Sample Name"]
+    df_long = df.melt(
+        id_vars=["Sample Name", var],
+        value_vars=exp_cols,
+        var_name="Cohort", value_name="Abundance"
+    )
+
+    non_ctrl = [c for c in df_long["Cohort"].unique() if c != control_mtn]
+    levels   = sorted(df_long[var].dropna().unique())
+
+    raw_rows = []
+    for lvl in levels:
+        sub = df_long[df_long[var] == lvl]
+        ctrl_vals = sub.loc[sub["Cohort"] == control_mtn, "Abundance"].dropna().tolist()
+        if not ctrl_vals:
+            continue
+        for coh in non_ctrl:
+            coh_vals = sub.loc[sub["Cohort"] == coh, "Abundance"].dropna().tolist()
+            if not coh_vals:
+                continue
+            try:
+                t, p = stats.ttest_ind(coh_vals, ctrl_vals, equal_var=False)
+            except Exception:
+                t, p = np.nan, np.nan
+            raw_rows.append({var: lvl, "Cohort": coh, "t-stat": t, "pval": p})
+
+    if not raw_rows:
+        return pd.DataFrame()
+
+    result = pd.DataFrame(raw_rows)
+    valid_mask = result["pval"].notna()
+    if valid_mask.sum() > 0:
+        corr = _apply_correction(result.loc[valid_mask, "pval"].tolist(), alpha, correction)
+        result.loc[valid_mask, "p_adj"] = corr["p_adjusted"]
+        result.loc[valid_mask, "significant"] = corr["reject"]
+    result["p_adj"] = result.get("p_adj", pd.Series(np.nan, index=result.index))
+    result["significant"] = result.get("significant", pd.Series(False, index=result.index))
+    return result.sort_values(["Cohort", var]).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Subgroup analysis (MADAG / Sphingolipids / any subset)
+# ---------------------------------------------------------------------------
+
+SUBGROUP_MADAG         = ["MAG", "DAG", "TAG", "MAG-O", "DAG-O", "TG", "DG", "MG"]
+SUBGROUP_SPHINGOLIPIDS = ["Cer", "HexCer", "Hex_Cer", "SM", "GM", "GD", "GT",
+                          "Hex2Cer", "LacCer", "Gb3"]
+
+
+def subgroup_analysis(df_meta, df_p, df_cohort, head_groups, control_mtn):
+    """
+    Focused analysis on a subset of lipid head groups.
+
+    Returns
+    -------
+    dict  keys: 'prop', 'logfc', 'zscore', 'meta_sub', 'cohort_sub'
+    """
+    if df_meta.empty or df_p.empty or df_cohort.empty:
+        return {}
+
+    dm_sub = df_meta[
+        df_meta["Head Group 2"].isin(head_groups) |
+        df_meta["Head Group"].isin(head_groups)
+    ].copy()
+    if dm_sub.empty:
+        return {}
+
+    keep_lipids = set(dm_sub["Sample Name"])
+    dp_sub = df_p[df_p["Sample Name"].isin(keep_lipids)].copy()
+    dc_sub = df_cohort[df_cohort.index.isin(keep_lipids)].copy()
+
+    if dp_sub.empty or dc_sub.empty:
+        return {}
+
+    cohort_cols = list(df_cohort.columns)
+    hg_raw = dm_sub.merge(dc_sub.reset_index(), on="Sample Name")
+    hg_sum = hg_raw.groupby("Head Group 2")[cohort_cols].sum()
+    col_totals = hg_sum.sum(axis=0).replace(0, np.nan)
+    hg_prop = hg_sum.div(col_totals, axis=1)
+
+    lfc = pd.DataFrame()
+    zsc = pd.DataFrame()
+    if control_mtn and control_mtn in dp_sub.columns:
+        try:
+            lfc = fold_change(dm_sub, dp_sub, "Head Group 2", control_mtn)
+        except Exception:
+            pass
+        try:
+            zsc = z_score(dm_sub, dp_sub, "Head Group 2", control_mtn)
+        except Exception:
+            pass
+
+    return {"prop": hg_prop, "logfc": lfc, "zscore": zsc,
+            "meta_sub": dm_sub, "cohort_sub": dc_sub}
+
+
+# ---------------------------------------------------------------------------
+# Global change summary: universally + mutation-specifically changed lipids
+# ---------------------------------------------------------------------------
+
+def summarise_top_changes(df_meta, df_p, df_cohort, control_mtn, top_n=20):
+    """
+    Identify lipids most consistently (global) or uniquely (specific) changed.
+
+    Returns
+    -------
+    global_df   : top_n lipids changed in same direction across ALL non-ctrl mutations
+    specific_df : per-mutation top_n most mutation-specific lipids
+    """
+    if df_meta.empty or df_p.empty or df_cohort.empty or not control_mtn:
+        return pd.DataFrame(), pd.DataFrame()
+    if control_mtn not in df_cohort.columns:
+        return pd.DataFrame(), pd.DataFrame()
+
+    dc = df_cohort.copy()
+    ctrl_col = dc[control_mtn].replace(0, np.nan)
+    non_ctrl_cols = [c for c in dc.columns if c != control_mtn]
+    if not non_ctrl_cols:
+        return pd.DataFrame(), pd.DataFrame()
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        lfc = np.log2(dc[non_ctrl_cols].div(ctrl_col, axis=0))
+    lfc.replace([np.inf, -np.inf], np.nan, inplace=True)
+    lfc.index.name = "Sample Name"
+    lfc = lfc.reset_index()
+
+    # Global: highest mean |log2FC| with consistent sign
+    lfc["mean_abs_lfc"] = lfc[non_ctrl_cols].abs().mean(axis=1)
+    signs = np.sign(lfc[non_ctrl_cols].fillna(0))
+    lfc["sign_consistency"] = signs.sum(axis=1).abs() / len(non_ctrl_cols)
+    global_df = lfc.nlargest(top_n, "mean_abs_lfc")[
+        ["Sample Name", "mean_abs_lfc", "sign_consistency"] + non_ctrl_cols
+    ].round(4).reset_index(drop=True)
+
+    # Mutation-specific
+    spec_rows = []
+    lfc_vals = lfc.set_index("Sample Name")[non_ctrl_cols]
+    for mut in non_ctrl_cols:
+        others = [c for c in non_ctrl_cols if c != mut]
+        other_mean = lfc_vals[others].abs().mean(axis=1) if others else pd.Series(0, index=lfc_vals.index)
+        specificity = lfc_vals[mut].abs() / (other_mean + 1e-6)
+        top_idx = specificity.nlargest(top_n).index
+        for lipid in top_idx:
+            spec_rows.append({
+                "Sample Name":        lipid,
+                "Mutation":           mut,
+                "log2FC":             round(float(lfc_vals.loc[lipid, mut]), 3)
+                                      if not pd.isna(lfc_vals.loc[lipid, mut]) else np.nan,
+                "Specificity Score":  round(float(specificity.loc[lipid]), 3),
+            })
+    specific_df = pd.DataFrame(spec_rows)
+
+    return global_df, specific_df

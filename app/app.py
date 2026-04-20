@@ -24,6 +24,7 @@ from shiny import App, Inputs, Outputs, Session, reactive, render, ui
 try:
     from app.analysis import (
         load_and_deduplicate_data,
+        load_and_deduplicate_data_v2,
         extract_experiments,
         make_df_p,
         aggregate_by_cohort,
@@ -41,11 +42,14 @@ try:
         subset_headgroup_by_chain,
         subset_headgroup_by_unsat,
         statistical_analysis,
+        statistical_analysis_v2,
         norm_col,
-        # plots
+        bonferroni_correction,
+        benjamini_hochberg_correction,
         plot_pca_variance,
         plot_pca_2d,
         plot_pca_3d,
+        plot_pca_2d_replicates,
         plot_kde_histogram,
         plot_zscore_heatmap,
         plot_correlation_heatmap,
@@ -54,10 +58,19 @@ try:
         plot_donut_chart,
         plot_pie_chart,
         plot_odd_chain_bar,
+        plot_cl_gaussian_fit,
+        plot_odd_chain_kde,
+        identify_cl_outliers,
+        pointwise_stat_test,
+        subgroup_analysis,
+        summarise_top_changes,
+        SUBGROUP_MADAG,
+        SUBGROUP_SPHINGOLIPIDS,
     )
 except ImportError:
     from analysis import (
         load_and_deduplicate_data,
+        load_and_deduplicate_data_v2,
         extract_experiments,
         make_df_p,
         aggregate_by_cohort,
@@ -75,10 +88,14 @@ except ImportError:
         subset_headgroup_by_chain,
         subset_headgroup_by_unsat,
         statistical_analysis,
+        statistical_analysis_v2,
         norm_col,
+        bonferroni_correction,
+        benjamini_hochberg_correction,
         plot_pca_variance,
         plot_pca_2d,
         plot_pca_3d,
+        plot_pca_2d_replicates,
         plot_kde_histogram,
         plot_zscore_heatmap,
         plot_correlation_heatmap,
@@ -87,6 +104,14 @@ except ImportError:
         plot_donut_chart,
         plot_pie_chart,
         plot_odd_chain_bar,
+        plot_cl_gaussian_fit,
+        plot_odd_chain_kde,
+        identify_cl_outliers,
+        pointwise_stat_test,
+        subgroup_analysis,
+        summarise_top_changes,
+        SUBGROUP_MADAG,
+        SUBGROUP_SPHINGOLIPIDS,
     )
 
 
@@ -112,8 +137,13 @@ app_ui = ui.page_navbar(
             ui.sidebar(
                 ui.h5("Data Files"),
                 ui.input_file("data_files",
-                              "Upload CSV file(s) (one per lipid class):",
-                              accept=".csv", multiple=True),
+                              "Upload CSV / XLS / XLSX file(s):",
+                              accept=".csv,.xls,.xlsx", multiple=True),
+                ui.hr(),
+                ui.h5("Comparison Mode"),
+                ui.input_checkbox("wt_cas9_mode",
+                                  "WT vs. CAS9 mode (locks control & shows only WT/CAS9)",
+                                  False),
                 ui.hr(),
                 ui.h5("Aggregation"),
                 ui.input_select("agg_method", "Replicate aggregation:",
@@ -129,6 +159,9 @@ app_ui = ui.page_navbar(
                 ui.input_numeric("blank_threshold",
                                  "Blank threshold (fraction of mean):",
                                  0.05, min=0.0, max=1.0, step=0.01),
+                ui.input_text("blank_keywords",
+                              "Blank sample keywords (comma-separated):",
+                              placeholder="e.g. RAJU, blank, QC"),
                 ui.hr(),
                 ui.input_action_button("btn_process", "Process / Apply Filters",
                                        class_="btn-primary btn-sm w-100"),
@@ -180,6 +213,11 @@ app_ui = ui.page_navbar(
             width="1/2",
         ),
         ui.layout_column_wrap(
+            _card("PCA — Replicate Scatter with 95% Confidence Ellipses",
+                  ui.output_plot("plt_pca_ellipse")),
+            width=1,
+        ),
+        ui.layout_column_wrap(
             _card("Downloads",
                   ui.download_button("dl_pca_scores",   "PCA Scores CSV",
                                      class_="btn-sm btn-outline-secondary"),
@@ -212,8 +250,22 @@ app_ui = ui.page_navbar(
             width="1/2",
         ),
         ui.layout_column_wrap(
+            _card("Gaussian Fit — Chain Length Distribution",
+                  ui.output_plot("plt_cl_gauss")),
+            width=1,
+        ),
+        ui.layout_column_wrap(
             _card("Odd-Chain Lipid Fraction by Cohort",
                   ui.output_plot("plt_odd_chain")),
+            _card("Odd-Chain Length KDE",
+                  ui.output_plot("plt_odd_cl_kde")),
+            width="1/2",
+        ),
+        ui.layout_column_wrap(
+            _card("Chain Length Distribution Outliers",
+                  ui.output_data_frame("tbl_cl_outliers"),
+                  ui.p("Ranked by Jensen-Shannon divergence from mean distribution.",
+                       class_="text-muted mt-1 small")),
             width=1,
         ),
         ui.layout_column_wrap(
@@ -325,14 +377,20 @@ app_ui = ui.page_navbar(
             ui.sidebar(
                 ui.h5("ANOVA / Post-hoc Controls"),
                 ui.input_select("stat_var", "Group variable:",
-                                {"Head Group 2":   "Head Group 2",
+                                {"Head Group 2":      "Head Group 2",
                                  "Acyl Chain Length": "Chain Length",
-                                 "Unsaturation":   "Unsaturation"}),
+                                 "Unsaturation":      "Unsaturation"}),
                 ui.input_numeric("stat_alpha", "Significance level (α):",
                                  0.05, min=0.001, max=0.5, step=0.001),
+                ui.input_select("stat_correction", "Multiple testing correction:",
+                                {"holm_sidak": "Holm–Sidak",
+                                 "bonferroni":  "Bonferroni",
+                                 "bh":          "Benjamini–Hochberg (FDR)"}),
+                ui.input_select("stat_ctrl", "Control cohort (for per-bin tests):",
+                                choices=[]),
                 ui.input_action_button("btn_run_stat", "Run Analysis",
                                        class_="btn-primary btn-sm w-100"),
-                width=250,
+                width=260,
             ),
             ui.layout_column_wrap(
                 _card("One-Way ANOVA Results",
@@ -342,9 +400,87 @@ app_ui = ui.page_navbar(
                 width=1,
             ),
             ui.layout_column_wrap(
-                _card("Pairwise Post-hoc (Holm–Sidak)",
+                _card("Pairwise Post-hoc (corrected)",
                       ui.output_data_frame("tbl_posthoc"),
                       ui.download_button("dl_posthoc", "Download Post-hoc CSV",
+                                         class_="btn-sm btn-outline-secondary mt-2")),
+                width=1,
+            ),
+            ui.layout_column_wrap(
+                _card("Per-Bin t-test vs Control",
+                      ui.output_data_frame("tbl_pw_stat"),
+                      ui.download_button("dl_pw_stat", "Download Per-Bin CSV",
+                                         class_="btn-sm btn-outline-secondary mt-2")),
+                width=1,
+            ),
+        ),
+    ),
+
+    # =======================  Tab 8: Sub-groups  ===========================
+    ui.nav_panel(
+        "🧫 Sub-groups",
+        ui.layout_sidebar(
+            ui.sidebar(
+                ui.h5("Sub-group Controls"),
+                ui.input_select("sg_ctrl", "Control cohort:", choices=[]),
+                width=220,
+            ),
+            ui.h4("MADAG (MAG / DAG / TAG)"),
+            ui.layout_column_wrap(
+                _card("MADAG — Proportions Heatmap",
+                      ui.output_plot("plt_sg_madag_prop")),
+                _card("MADAG — Log Fold Change",
+                      ui.output_plot("plt_sg_madag_fc")),
+                _card("MADAG — Z-score",
+                      ui.output_plot("plt_sg_madag_z")),
+                width="1/3",
+            ),
+            ui.hr(),
+            ui.h4("Sphingolipids (Cer / HexCer / SM / GM)"),
+            ui.layout_column_wrap(
+                _card("Sphingolipids — Proportions Heatmap",
+                      ui.output_plot("plt_sg_sph_prop")),
+                _card("Sphingolipids — Log Fold Change",
+                      ui.output_plot("plt_sg_sph_fc")),
+                _card("Sphingolipids — Z-score",
+                      ui.output_plot("plt_sg_sph_z")),
+                width="1/3",
+            ),
+        ),
+    ),
+
+    # =======================  Tab 9: Insights  =============================
+    ui.nav_panel(
+        "🔍 Insights",
+        ui.layout_sidebar(
+            ui.sidebar(
+                ui.h5("Insight Controls"),
+                ui.input_select("ins_ctrl", "Control cohort:", choices=[]),
+                ui.input_numeric("ins_top_n", "Top N lipids:", 20, min=5, max=100),
+                ui.input_action_button("btn_run_insights", "Run Insights",
+                                       class_="btn-primary btn-sm w-100"),
+                width=230,
+            ),
+            ui.layout_column_wrap(
+                _card("Universally Changed Lipids",
+                      ui.p("Lipids with highest mean |log2FC| across ALL non-control mutations, in a consistent direction.",
+                           class_="text-muted small"),
+                      ui.output_data_frame("tbl_global_changes"),
+                      ui.download_button("dl_global_changes", "Download CSV",
+                                         class_="btn-sm btn-outline-secondary mt-2")),
+                width=1,
+            ),
+            ui.layout_column_wrap(
+                _card("Mutation-Specific Signatures",
+                      ui.p("Lipids with the largest fold change unique to a single mutation.",
+                           class_="text-muted small"),
+                      ui.layout_sidebar(
+                          ui.sidebar(
+                              ui.input_select("ins_mut_filter", "Filter by mutation:",
+                                              choices=["(all)"]),
+                              width=180),
+                          ui.output_data_frame("tbl_specific_changes")),
+                      ui.download_button("dl_specific_changes", "Download CSV",
                                          class_="btn-sm btn-outline-secondary mt-2")),
                 width=1,
             ),
@@ -435,9 +571,11 @@ def server(input: Inputs, output: Outputs, session: Session):
         mu  = int(input.max_unsat())
         rb  = bool(input.remove_blank())
         bth = float(input.blank_threshold())
+        kw_raw = input.blank_keywords()
+        bkw = [k.strip() for k in kw_raw.split(",") if k.strip()] if kw_raw else None
 
         return filter_data(dr, dm, filter_hg=fhg, min_chain=mc, max_unsat=mu,
-                           remove_blank=rb, blank_threshold=bth)
+                           remove_blank=rb, blank_threshold=bth, blank_keywords=bkw)
 
     @reactive.calc
     def df_raw_filt():
@@ -464,7 +602,14 @@ def server(input: Inputs, output: Outputs, session: Session):
         exps = df_exps()
         if dp.empty or exps.empty:
             return pd.DataFrame()
-        return aggregate_by_cohort(dp, exps, method=input.agg_method())
+        dc = aggregate_by_cohort(dp, exps, method=input.agg_method())
+        # WT/CAS9 locked mode: restrict to only WT and CAS9 cohorts
+        if input.wt_cas9_mode() and not dc.empty:
+            wt_cas9_cols = [c for c in dc.columns
+                            if "cas9" in c.lower() or "wt" in c.lower()]
+            if wt_cas9_cols:
+                dc = dc[wt_cas9_cols]
+        return dc
 
     @reactive.calc
     def pca_result():
@@ -500,9 +645,43 @@ def server(input: Inputs, output: Outputs, session: Session):
         var_map = {"Head Group 2": "Head Group 2",
                    "Acyl Chain Length": "Acyl Chain Length",
                    "Unsaturation": "Unsaturation"}
-        var   = var_map.get(input.stat_var(), "Head Group 2")
-        alpha = float(input.stat_alpha())
-        return statistical_analysis(dm, dp, dc, var, alpha)
+        var        = var_map.get(input.stat_var(), "Head Group 2")
+        alpha      = float(input.stat_alpha())
+        correction = input.stat_correction()
+        return statistical_analysis_v2(dm, dp, dc, var, alpha, correction)
+
+    @reactive.calc
+    def pw_stat_result():
+        input.btn_run_stat()
+        dm = df_meta()
+        dp = df_p()
+        if dm.empty or dp.empty:
+            return pd.DataFrame()
+        var_map = {"Head Group 2": "Head Group 2",
+                   "Acyl Chain Length": "Acyl Chain Length",
+                   "Unsaturation": "Unsaturation"}
+        var    = var_map.get(input.stat_var(), "Head Group 2")
+        ctrl   = input.stat_ctrl()
+        alpha  = float(input.stat_alpha())
+        corr   = input.stat_correction()
+        return pointwise_stat_test(dm, dp, var, ctrl, alpha, corr)
+
+    @reactive.calc
+    def sg_madag_result():
+        ctrl = input.sg_ctrl()
+        return subgroup_analysis(df_meta(), df_p(), df_cohort(), SUBGROUP_MADAG, ctrl)
+
+    @reactive.calc
+    def sg_sph_result():
+        ctrl = input.sg_ctrl()
+        return subgroup_analysis(df_meta(), df_p(), df_cohort(), SUBGROUP_SPHINGOLIPIDS, ctrl)
+
+    @reactive.calc
+    def insights_result():
+        input.btn_run_insights()
+        ctrl  = input.ins_ctrl()
+        top_n = int(input.ins_top_n())
+        return summarise_top_changes(df_meta(), df_p(), df_cohort(), ctrl, top_n)
 
     # ------------------------------------------------------------------ #
     #  DYNAMIC CHOICE UPDATES                                              #
@@ -517,8 +696,14 @@ def server(input: Inputs, output: Outputs, session: Session):
         for c in cohorts:
             if "cas9" in c.lower() or "wt" in c.lower():
                 ctrl = c; break
-        for widget_id in ("cl_ctrl", "us_ctrl", "hg_ctrl", "lc_ctrl"):
+        for widget_id in ("cl_ctrl", "us_ctrl", "hg_ctrl", "lc_ctrl",
+                          "sg_ctrl", "ins_ctrl", "stat_ctrl"):
             ui.update_select(widget_id, choices=cohorts, selected=ctrl, session=session)
+        # Insights mutation filter
+        non_ctrl = [c for c in cohorts if c != ctrl] if ctrl else cohorts
+        ui.update_select("ins_mut_filter",
+                         choices=["(all)"] + non_ctrl,
+                         selected="(all)", session=session)
 
     @reactive.effect
     def _update_hg_filter():
@@ -588,6 +773,10 @@ def server(input: Inputs, output: Outputs, session: Session):
         df_pca, _, _ = pca_result()
         yield df_pca.to_csv() if not df_pca.empty else ""
 
+    @render.plot
+    def plt_pca_ellipse():
+        return plot_pca_2d_replicates(df_p(), df_exps())
+
     @render.download(filename="pca_variance.csv")
     def dl_pca_variance():
         import numpy as np
@@ -643,8 +832,25 @@ def server(input: Inputs, output: Outputs, session: Session):
         return plot_fold_change_heatmap(df_log, f"Chain Length log FC vs {ctrl}")
 
     @render.plot
+    def plt_cl_gauss():
+        d = cl_data()
+        return plot_cl_gaussian_fit(d.get("long") if d else None)
+
+    @render.plot
     def plt_odd_chain():
         return plot_odd_chain_bar(odd_chain_fraction(df_meta(), df_cohort()))
+
+    @render.plot
+    def plt_odd_cl_kde():
+        return plot_odd_chain_kde(df_meta(), df_p())
+
+    @render.data_frame
+    def tbl_cl_outliers():
+        d = cl_data()
+        out = identify_cl_outliers(d) if d else pd.DataFrame()
+        if out.empty:
+            return render.DataGrid(pd.DataFrame({"Info": ["No data yet."]}))
+        return render.DataGrid(out, width="100%")
 
     @render.plot
     def plt_cl_ge50():
@@ -835,6 +1041,14 @@ def server(input: Inputs, output: Outputs, session: Session):
                 {"Info": ["No significant pairwise comparisons."]}))
         return render.DataGrid(ph_df, width="100%")
 
+    @render.data_frame
+    def tbl_pw_stat():
+        df = pw_stat_result()
+        if df is None or df.empty:
+            return render.DataGrid(pd.DataFrame(
+                {"Info": ["Run analysis with a control cohort selected."]}))
+        return render.DataGrid(df, width="100%")
+
     @render.download(filename="anova_results.csv")
     def dl_anova():
         anova_df, _ = stat_result()
@@ -846,6 +1060,83 @@ def server(input: Inputs, output: Outputs, session: Session):
         _, ph_df = stat_result()
         yield (ph_df.to_csv(index=False)
                if ph_df is not None and not ph_df.empty else "")
+
+    @render.download(filename="perbin_stat.csv")
+    def dl_pw_stat():
+        df = pw_stat_result()
+        yield (df.to_csv(index=False) if df is not None and not df.empty else "")
+
+    # ------------------------------------------------------------------ #
+    #  TAB 8 — SUB-GROUPS                                                  #
+    # ------------------------------------------------------------------ #
+
+    def _sg_plot(result, key, title):
+        d = result()
+        df = d.get(key) if d else None
+        if key == "prop":
+            return plot_heatmap_general(df, title, cmap="YlOrRd")
+        if key == "logfc":
+            return plot_fold_change_heatmap(df, title)
+        return plot_zscore_heatmap(df, title)
+
+    @render.plot
+    def plt_sg_madag_prop():
+        return _sg_plot(sg_madag_result, "prop", "MADAG — Proportions")
+
+    @render.plot
+    def plt_sg_madag_fc():
+        return _sg_plot(sg_madag_result, "logfc", "MADAG — Log Fold Change")
+
+    @render.plot
+    def plt_sg_madag_z():
+        return _sg_plot(sg_madag_result, "zscore", "MADAG — Z-score")
+
+    @render.plot
+    def plt_sg_sph_prop():
+        return _sg_plot(sg_sph_result, "prop", "Sphingolipids — Proportions")
+
+    @render.plot
+    def plt_sg_sph_fc():
+        return _sg_plot(sg_sph_result, "logfc", "Sphingolipids — Log Fold Change")
+
+    @render.plot
+    def plt_sg_sph_z():
+        return _sg_plot(sg_sph_result, "zscore", "Sphingolipids — Z-score")
+
+    # ------------------------------------------------------------------ #
+    #  TAB 9 — INSIGHTS                                                    #
+    # ------------------------------------------------------------------ #
+
+    @render.data_frame
+    def tbl_global_changes():
+        global_df, _ = insights_result()
+        if global_df is None or global_df.empty:
+            return render.DataGrid(pd.DataFrame(
+                {"Info": ["Click 'Run Insights' with a control cohort selected."]}))
+        return render.DataGrid(global_df, width="100%")
+
+    @render.data_frame
+    def tbl_specific_changes():
+        _, spec_df = insights_result()
+        if spec_df is None or spec_df.empty:
+            return render.DataGrid(pd.DataFrame(
+                {"Info": ["Click 'Run Insights' with a control cohort selected."]}))
+        mut_filter = input.ins_mut_filter()
+        if mut_filter and mut_filter != "(all)":
+            spec_df = spec_df[spec_df["Mutation"] == mut_filter]
+        return render.DataGrid(spec_df, width="100%")
+
+    @render.download(filename="global_changes.csv")
+    def dl_global_changes():
+        global_df, _ = insights_result()
+        yield (global_df.to_csv(index=False)
+               if global_df is not None and not global_df.empty else "")
+
+    @render.download(filename="specific_changes.csv")
+    def dl_specific_changes():
+        _, spec_df = insights_result()
+        yield (spec_df.to_csv(index=False)
+               if spec_df is not None and not spec_df.empty else "")
 
 
 # ---------------------------------------------------------------------------
