@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Logs and temp files
+*.log
+*.tmp
+parsing_test*.log
+test_advanced_output.txt
+
+# OS
+.DS_Store
+Thumbs.db
