@@ -1146,24 +1146,41 @@ def plot_odd_chain_bar(odd_frac_df, title="Odd-Chain Lipid Fraction by Cohort"):
 # XLS / XLSX aware loader
 # ---------------------------------------------------------------------------
 
-def load_file_any_format(path, skip_rows=0):
+def get_excel_sheet_names(path):
+    """Return list of sheet names for an Excel file, or [] for CSV."""
+    ext = str(path).lower().split(".")[-1]
+    if ext in ("xls", "xlsx"):
+        try:
+            xl = pd.ExcelFile(path, engine="openpyxl")
+            return xl.sheet_names
+        except Exception:
+            return []
+    return []
+
+
+def load_file_any_format(path, skip_rows=0, sheet_name=0):
     """Read CSV, XLS or XLSX into a raw DataFrame (dtype=str)."""
     ext = str(path).lower().split(".")[-1]
     if ext in ("xls", "xlsx"):
-        return pd.read_excel(path, dtype=str, skiprows=skip_rows, engine="openpyxl")
+        return pd.read_excel(
+            path, dtype=str, skiprows=skip_rows,
+            sheet_name=sheet_name, engine="openpyxl"
+        )
     return pd.read_csv(path, dtype=str, skiprows=skip_rows)
 
 
-def load_and_deduplicate_data_v2(file_infos, idx_col=None, num_idx=0, skip_rows=0):
+def load_and_deduplicate_data_v2(file_infos, idx_col=None, num_idx=0,
+                                  skip_rows=0, sheet_name=0):
     """
-    Like load_and_deduplicate_data but also handles XLS/XLSX.
-    Drop-in replacement when XLSX files are uploaded.
+    Like load_and_deduplicate_data but also handles XLS/XLSX and supports
+    sheet_name (name string or 0-based index).
     """
     dfs = []
     for fi in file_infos:
         path = fi["datapath"] if isinstance(fi, dict) else fi
         try:
-            df = load_file_any_format(path, skip_rows=skip_rows)
+            df = load_file_any_format(path, skip_rows=skip_rows,
+                                      sheet_name=sheet_name)
 
             actual_idx_col = None
             if idx_col and str(idx_col).strip() and str(idx_col).strip() in df.columns:

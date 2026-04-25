@@ -64,6 +64,7 @@ try:
         pointwise_stat_test,
         subgroup_analysis,
         summarise_top_changes,
+        get_excel_sheet_names,
         SUBGROUP_MADAG,
         SUBGROUP_SPHINGOLIPIDS,
     )
@@ -110,6 +111,7 @@ except ImportError:
         pointwise_stat_test,
         subgroup_analysis,
         summarise_top_changes,
+        get_excel_sheet_names,
         SUBGROUP_MADAG,
         SUBGROUP_SPHINGOLIPIDS,
     )
@@ -169,13 +171,29 @@ app_ui = ui.page_navbar(
             ),
             ui.layout_column_wrap(
                 _card("Advanced Data Format Options",
-                      ui.p("Use these settings if your CSV has a non-standard layout (e.g., Lipotype files).", class_="text-muted mb-2"),
+                      ui.p("Use these settings if your file has a non-standard layout (e.g., Lipotype/MSDIAL XLSX files).",
+                           class_="text-muted mb-2"),
                       ui.layout_columns(
-                          ui.input_text("adv_idx_col", "Lipid Species Column Name:", placeholder="e.g. Shorthand Notation"),
-                          ui.input_numeric("adv_skip_rows", "Header Row Offset (Skip N rows):", 0, min=0),
-                          ui.input_numeric("adv_num_idx", "Drop N initial metadata columns:", 0, min=0),
+                          ui.input_text("adv_idx_col",
+                                        "Lipid Species Column Name:",
+                                        placeholder="e.g. Metabolite name"),
+                          ui.input_numeric("adv_skip_rows",
+                                           "Header Row Offset (Skip N rows):",
+                                           0, min=0),
+                          ui.input_numeric("adv_num_idx",
+                                           "Drop N initial metadata columns:",
+                                           0, min=0),
                           col_widths=(4, 4, 4)
-                      )
+                      ),
+                      ui.hr(),
+                      ui.h6("Excel Sheet Selection"),
+                      ui.p("For XLSX files, select which sheet contains your data. "
+                           "Upload the file first, then pick the sheet.",
+                           class_="text-muted small mb-1"),
+                      ui.input_select("adv_sheet_name",
+                                      "Sheet name:",
+                                      choices=["(auto — first sheet)"],
+                                      selected="(auto — first sheet)"),
                 ),
                 width=1,
             ),
@@ -511,17 +529,47 @@ def server(input: Inputs, output: Outputs, session: Session):
         files = input.data_files()
         if files is None:
             return pd.DataFrame()
-            
+
         adv_idx = input.adv_idx_col()
         num_idx = input.adv_num_idx()
-        skip = input.adv_skip_rows()
-        
-        return load_and_deduplicate_data(
+        skip    = input.adv_skip_rows()
+        sheet_choice = input.adv_sheet_name()
+        sheet_name = 0 if sheet_choice == "(auto — first sheet)" else sheet_choice
+
+        return load_and_deduplicate_data_v2(
             files,
             idx_col=adv_idx,
             num_idx=int(num_idx) if num_idx else 0,
-            skip_rows=int(skip) if skip else 0
+            skip_rows=int(skip) if skip else 0,
+            sheet_name=sheet_name,
         )
+
+    @reactive.effect
+    def _update_sheet_choices():
+        """Whenever a file is uploaded, populate the sheet name dropdown."""
+        files = input.data_files()
+        if not files:
+            ui.update_select("adv_sheet_name",
+                             choices=["(auto — first sheet)"],
+                             selected="(auto — first sheet)",
+                             session=session)
+            return
+        # Use the first uploaded file to read sheet names
+        path = files[0]["datapath"]
+        sheets = get_excel_sheet_names(path)
+        if sheets:
+            choices = sheets  # real sheet names only
+            selected = sheets[0]
+            ui.update_select("adv_sheet_name",
+                             choices=choices,
+                             selected=selected,
+                             session=session)
+        else:
+            # CSV — no sheet selection needed
+            ui.update_select("adv_sheet_name",
+                             choices=["(auto — first sheet)"],
+                             selected="(auto — first sheet)",
+                             session=session)
 
     @reactive.calc
     def header_df():
