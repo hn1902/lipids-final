@@ -24,8 +24,25 @@ After loading:
 import re
 import io
 import warnings
+import logging
 import numpy as np
 import pandas as pd
+
+# Import preprocessing helpers (used as delegates in this module)
+try:
+    from app.preprocessing import (
+        extract_metadata_robust,
+        heuristic_cohort_from_name,
+        aggregate_by_hierarchy,
+    )
+except ImportError:
+    from preprocessing import (
+        extract_metadata_robust,
+        heuristic_cohort_from_name,
+        aggregate_by_hierarchy,
+    )
+
+_logger = logging.getLogger(__name__)
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -174,19 +191,18 @@ def extract_experiments(df_raw, header_df=None, cohort_row_idx=1):
         except Exception:
             pass # Fall back to regex if parsing fails
 
-    # Fallback / Regex Parsing
+    # Fallback / Heuristic Parsing
     for col in exp_cols:
         # Strip deduplication suffix (.1, .2 ...) for display
         base = re.sub(r"\.\d+$", "", col)
-        # Try to parse NegMSMSALL-{Mutation}_{Replicate} pattern
+        # Try legacy NegMSMSALL-{Mutation}_{Replicate} pattern first
         m = re.match(r".*?-(.+?)_([A-Za-z])$", base)
         if m:
             mutation  = m.group(1)
             replicate = m.group(2)
         else:
-            # Fallback: use whole base name as mutation
-            mutation  = base
-            replicate = "1"
+            # Use heuristic cohort parser for non-standard sample names
+            mutation, replicate = heuristic_cohort_from_name(col)
         rows.append({"Exp": col, "Mutation": mutation, "Replicate": replicate})
     return pd.DataFrame(rows)
 
@@ -220,6 +236,9 @@ def aggregate_by_cohort(df_p, df_exps, method="mean"):
     """
     Average (or median/sum) per-experiment data within each mutation group.
 
+    Delegates to aggregate_by_hierarchy() with levels=["Mutation"] to
+    produce identical output to the legacy implementation.
+
     Parameters
     ----------
     df_p    : DataFrame with 'Sample Name' col + one col per experiment
@@ -231,29 +250,7 @@ def aggregate_by_cohort(df_p, df_exps, method="mean"):
     -------
     df_cohort : DataFrame  index='Sample Name', cols=unique mutations
     """
-    if df_p.empty:
-        return pd.DataFrame()
-
-    # Build mapping of mutation → list of column indices
-    mutations = df_exps["Mutation"].unique().tolist()
-    agg = {}
-    for mtn in mutations:
-        # All columns in df_p that belong to this mutation
-        cols = [c for c in df_p.columns if c == mtn]
-        if not cols:
-            continue
-        sub = df_p[cols]
-        if method == "median":
-            agg[mtn] = sub.median(axis=1)
-        elif method == "sum":
-            agg[mtn] = sub.sum(axis=1)
-        else:
-            agg[mtn] = sub.mean(axis=1)
-
-    df_cohort = pd.DataFrame(agg)
-    df_cohort.index = df_p["Sample Name"].values
-    df_cohort.index.name = "Sample Name"
-    return df_cohort
+    return aggregate_by_hierarchy(df_p, df_exps, levels=["Mutation"], method=method)
 
 
 # ---------------------------------------------------------------------------
@@ -276,55 +273,16 @@ def extract_metadata(df_raw):
     """
     Parse the "Sample Name" column of the raw DataFrame into metadata.
 
+    Delegates to the robust lipid parser in preprocessing.py which handles
+    ceramides, sphingolipids, plasmalogens, semicolon notation, and other
+    non-standard lipid naming conventions.
+
     Returns
     -------
     pd.DataFrame  cols = ['Sample Name', 'Head Group', 'Head Group 2',
                           'Acyl Chain Length', 'Unsaturation', 'Unsaturation 2']
     """
-    if df_raw is None or df_raw.empty:
-        return pd.DataFrame()
-
-    names = df_raw["Sample Name"].tolist()
-    records = []
-
-    for name in names:
-        name = str(name).strip()
-        parts = name.split()
-        hg = parts[0] if parts else "Unknown"
-
-        # Chain spec is the second token (may be "34:1+HCOO", "d18:1/C24:0", etc.)
-        chain_spec = parts[1] if len(parts) > 1 else "0:0"
-        # Remove adduct suffix (+HCOO, +NH4, etc.)
-        chain_spec = chain_spec.split("+")[0]
-        # Handle plasmalogen prefix like "O-34:1"
-        chain_spec = re.sub(r"^[OP]-", "", chain_spec)
-        # Handle Cer-style "d18:1/C24:0" — use first number pair
-        chain_spec = chain_spec.split("/")[0]
-        # Remove leading "d" or "t"
-        chain_spec = re.sub(r"^[a-zA-Z]", "", chain_spec)
-
-        match = re.match(r"(\d+):(\d+)", chain_spec)
-        cl    = int(match.group(1)) if match else 0
-        unsat = int(match.group(2)) if match else 0
-
-        # Head Group 2 — normalised class
-        hg2 = hg
-        hg2 = re.sub(r"\s+[OP]$", "", hg2).strip()   # remove O/P plasmalogen notation
-        hg2 = re.sub(r"\d+$", "", hg2).strip()         # remove trailing digits (GD1→GD)
-        hg2 = hg2.replace("HexCer", "Hex_Cer")
-
-        unsat2 = str(unsat) if unsat < 3 else ">=3"
-
-        records.append({
-            "Sample Name":    name,
-            "Head Group":     hg,
-            "Head Group 2":   hg2,
-            "Acyl Chain Length": cl,
-            "Unsaturation":   unsat,
-            "Unsaturation 2": unsat2,
-        })
-
-    return pd.DataFrame(records)
+    return extract_metadata_robust(df_raw)
 
 
 # ---------------------------------------------------------------------------

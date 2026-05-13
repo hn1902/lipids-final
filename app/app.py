@@ -116,6 +116,17 @@ except ImportError:
         SUBGROUP_SPHINGOLIPIDS,
     )
 
+try:
+    from app.preprocessing import (
+        preprocess_raw_metabolomics_export,
+        filter_non_lipids,
+    )
+except ImportError:
+    from preprocessing import (
+        preprocess_raw_metabolomics_export,
+        filter_non_lipids,
+    )
+
 
 # ---------------------------------------------------------------------------
 # UI helpers
@@ -203,6 +214,24 @@ app_ui = ui.page_navbar(
                                     accept=".csv", multiple=False),
                       ui.input_numeric("cohort_row", "Row containing Cohorts (1-based index):", 2, min=1),
                       ui.p("If no header file is provided, the app will automatically extract cohorts from the data file column names.", class_="text-muted mt-2")
+                ),
+                width=1,
+            ),
+            ui.layout_column_wrap(
+                _card("Preprocessing Options",
+                      ui.input_switch("enable_robust_preprocess",
+                                      "Enable robust preprocessing",
+                                      value=True),
+                      ui.p("Automatically detects and strips metadata columns, "
+                           "validates abundance data, and handles non-standard formats. "
+                           "Disable to use legacy loading for already-clean datasets.",
+                           class_="text-muted small mb-2"),
+                      ui.input_checkbox("keep_lipids_only",
+                                        "Keep only lipid species (remove vitamins, unknowns)",
+                                        value=True),
+                      ui.hr(),
+                      ui.h6("Preprocessing Report"),
+                      ui.output_ui("preprocess_report"),
                 ),
                 width=1,
             ),
@@ -524,6 +553,9 @@ def server(input: Inputs, output: Outputs, session: Session):
     #  REACTIVE CALCULATIONS                                               #
     # ------------------------------------------------------------------ #
 
+    # Reactive value to hold preprocessing report lines for the UI
+    _preprocess_report_lines = reactive.value([])
+
     @reactive.calc
     def raw_df():
         files = input.data_files()
@@ -536,13 +568,58 @@ def server(input: Inputs, output: Outputs, session: Session):
         sheet_choice = input.adv_sheet_name()
         sheet_name = 0 if sheet_choice == "(auto — first sheet)" else sheet_choice
 
-        return load_and_deduplicate_data_v2(
-            files,
-            idx_col=adv_idx,
-            num_idx=int(num_idx) if num_idx else 0,
-            skip_rows=int(skip) if skip else 0,
-            sheet_name=sheet_name,
-        )
+        if input.enable_robust_preprocess():
+            try:
+                df, report = preprocess_raw_metabolomics_export(
+                    files,
+                    sheet_name=sheet_name,
+                    idx_col=adv_idx,
+                    num_idx=int(num_idx) if num_idx else 0,
+                    skip_rows=int(skip) if skip else 0,
+                )
+                _preprocess_report_lines.set(report.summary_lines())
+                if df.empty and report.warnings:
+                    ui.notification_show(
+                        "Robust preprocessing returned empty data. "
+                        "Falling back to legacy loader.",
+                        type="warning", duration=6,
+                    )
+                    return load_and_deduplicate_data_v2(
+                        files,
+                        idx_col=adv_idx,
+                        num_idx=int(num_idx) if num_idx else 0,
+                        skip_rows=int(skip) if skip else 0,
+                        sheet_name=sheet_name,
+                    )
+                return df
+            except Exception as e:
+                ui.notification_show(
+                    f"Robust preprocessing failed: {e}. "
+                    f"Falling back to legacy loader.",
+                    type="warning", duration=8,
+                )
+                _preprocess_report_lines.set(
+                    [f"⚠ Preprocessing error: {e}",
+                     "Fell back to legacy pipeline."]
+                )
+                return load_and_deduplicate_data_v2(
+                    files,
+                    idx_col=adv_idx,
+                    num_idx=int(num_idx) if num_idx else 0,
+                    skip_rows=int(skip) if skip else 0,
+                    sheet_name=sheet_name,
+                )
+        else:
+            _preprocess_report_lines.set(
+                ["Robust preprocessing disabled — using legacy loader."]
+            )
+            return load_and_deduplicate_data_v2(
+                files,
+                idx_col=adv_idx,
+                num_idx=int(num_idx) if num_idx else 0,
+                skip_rows=int(skip) if skip else 0,
+                sheet_name=sheet_name,
+            )
 
     @reactive.effect
     def _update_sheet_choices():
@@ -613,6 +690,18 @@ def server(input: Inputs, output: Outputs, session: Session):
         dm = df_meta_full()
         if dr.empty or dm.empty:
             return pd.DataFrame(), pd.DataFrame()
+
+        # --- Ontology filtering (remove non-lipid rows) ---
+        if input.keep_lipids_only():
+            dr_f, dm_f, ont_report = filter_non_lipids(dr, dm)
+            if ont_report["removed_count"] > 0:
+                cats = ", ".join(ont_report["removed_categories"][:5])
+                ui.notification_show(
+                    f"Removed {ont_report['removed_count']} non-lipid rows "
+                    f"({cats}{'…' if len(ont_report['removed_categories']) > 5 else ''}).",
+                    type="message", duration=5,
+                )
+            dr, dm = dr_f, dm_f
 
         fhg = list(input.filter_hg()) if input.filter_hg() else None
         mc  = int(input.min_chain())
@@ -796,6 +885,20 @@ def server(input: Inputs, output: Outputs, session: Session):
         except Exception:
             out = dr
         yield out.to_csv(index=False)
+
+    @render.ui
+    def preprocess_report():
+        lines = _preprocess_report_lines()
+        if not lines:
+            return ui.p("No preprocessing report yet — upload a file to begin.",
+                        class_="text-muted small")
+        items = []
+        for line in lines:
+            if line.startswith("\u26a0"):
+                items.append(ui.tags.li(line, class_="text-warning small"))
+            else:
+                items.append(ui.tags.li(line, class_="small"))
+        return ui.tags.ul(*items, class_="list-unstyled mb-0")
 
     # ------------------------------------------------------------------ #
     #  TAB 2 — PCA                                                         #
