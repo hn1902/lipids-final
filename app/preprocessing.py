@@ -48,6 +48,10 @@ NON_LIPID_DENYLIST = {
     "vitamin", "unknown", "metabolite", "adenosine",
     "cholecalciferol", "w/o", "could not", "unparsed",
     "unidentified", "noise",
+    # Chemical contaminants / reagents / non-biological compounds
+    "cyclopentasiloxane", "cyclohexasiloxane", "phthalate",
+    "dioctyl", "elaidylphosphocholine", "coq",
+    "docosenamide", "siloxane",
 }
 
 
@@ -68,6 +72,7 @@ class PreprocessReport:
     dropped_duplicate_columns: List[str] = field(default_factory=list)
     failed_numeric_coercions: int = 0
     failed_lipid_parses: int = 0
+    duplicates_collapsed: int = 0
     inferred_cohorts: Dict[str, str] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
 
@@ -103,6 +108,9 @@ class PreprocessReport:
         if self.failed_lipid_parses:
             lines.append(f"Lipid names that could not be parsed: "
                          f"{self.failed_lipid_parses}")
+        if self.duplicates_collapsed > 0:
+            lines.append(f"Duplicate lipid rows consolidated (sum): "
+                         f"{self.duplicates_collapsed}")
         if self.dropped_nonlipid_rows:
             cats = ", ".join(self.dropped_nonlipid_categories[:8])
             lines.append(f"Non-lipid rows removed: "
@@ -653,5 +661,13 @@ def preprocess_raw_metabolomics_export(
 
     # Final output: Sample Name + validated abundance columns only
     result = combined[["Sample Name"] + kept_cols].copy()
+
+    # --- Consolidate duplicate lipid species (sum abundances) ---
+    n_before = len(result)
+    num_cols = [c for c in result.columns if c != "Sample Name"]
+    result = result.groupby("Sample Name", as_index=False)[num_cols].sum()
+    n_collapsed = n_before - len(result)
+    if n_collapsed > 0:
+        report.duplicates_collapsed = n_collapsed
 
     return result, report

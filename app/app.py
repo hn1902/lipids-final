@@ -244,6 +244,14 @@ app_ui = ui.page_navbar(
                       ui.output_data_frame("tbl_exps")),
                 width=1,
             ),
+            ui.layout_column_wrap(
+                _card("Others (Non-Lipid / Non-Parseable Compounds)",
+                      ui.p("Compounds removed from the main analysis pipeline "
+                           "(chemical contaminants, IUPAC names, unparseable entries).",
+                           class_="text-muted small mb-2"),
+                      ui.output_data_frame("tbl_others")),
+                width=1,
+            ),
         ),
     ),
 
@@ -683,6 +691,9 @@ def server(input: Inputs, output: Outputs, session: Session):
             return pd.DataFrame()
         return extract_metadata(df)
 
+    # Reactive value to hold rows removed by ontology filtering ("Others")
+    _others_df = reactive.value(pd.DataFrame())
+
     @reactive.calc
     def df_filtered_pair():
         input.btn_process()  # trigger on button press
@@ -694,6 +705,13 @@ def server(input: Inputs, output: Outputs, session: Session):
         # --- Ontology filtering (remove non-lipid rows) ---
         if input.keep_lipids_only():
             dr_f, dm_f, ont_report = filter_non_lipids(dr, dm)
+            # Capture removed rows for the "Others" table
+            removed_names = set(dr["Sample Name"]) - set(dr_f["Sample Name"])
+            if removed_names:
+                others = dr[dr["Sample Name"].isin(removed_names)].copy()
+                _others_df.set(others)
+            else:
+                _others_df.set(pd.DataFrame())
             if ont_report["removed_count"] > 0:
                 cats = ", ".join(ont_report["removed_categories"][:5])
                 ui.notification_show(
@@ -702,6 +720,8 @@ def server(input: Inputs, output: Outputs, session: Session):
                     type="message", duration=5,
                 )
             dr, dm = dr_f, dm_f
+        else:
+            _others_df.set(pd.DataFrame())
 
         fhg = list(input.filter_hg()) if input.filter_hg() else None
         mc  = int(input.min_chain())
@@ -885,6 +905,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         except Exception:
             out = dr
         yield out.to_csv(index=False)
+
 
     @render.ui
     def preprocess_report():
