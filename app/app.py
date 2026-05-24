@@ -120,11 +120,15 @@ try:
     from app.preprocessing import (
         preprocess_raw_metabolomics_export,
         filter_non_lipids,
+        suggest_cohort_mapping,
+        coerce_bool_series,
     )
 except ImportError:
     from preprocessing import (
         preprocess_raw_metabolomics_export,
         filter_non_lipids,
+        suggest_cohort_mapping,
+        coerce_bool_series,
     )
 
 
@@ -181,7 +185,7 @@ app_ui = ui.page_navbar(
                 width=290,
             ),
             ui.layout_column_wrap(
-                _card("Advanced Data Format Options",
+                _card("Advanced / Emergency Preprocessing Options",
                       ui.p("Use these settings if your file has a non-standard layout (e.g., Lipotype/MSDIAL XLSX files).",
                            class_="text-muted mb-2"),
                       ui.layout_columns(
@@ -235,6 +239,27 @@ app_ui = ui.page_navbar(
                 ),
                 width=1,
             ),
+            ui.layout_column_wrap(
+                _card("★ Cohort / Group Mapping",
+                      ui.p("Review and edit the cohort assignments below. "
+                           "Each sample column is auto-assigned to a cohort group. "
+                           "Edit the 'Cohort' column to change assignments, or uncheck 'Include' to remove a sample.",
+                           class_="text-muted small mb-2"),
+                      ui.output_ui("cohort_confidence_badge"),
+                      ui.output_data_frame("tbl_cohort_mapping"),
+                      ui.layout_columns(
+                          ui.input_action_button("btn_confirm_cohorts",
+                                                 "✅ Confirm Cohort Mapping",
+                                                 class_="btn-success btn-sm"),
+                          ui.input_action_button("btn_reset_cohorts",
+                                                 "↺ Reset to Auto-Detected",
+                                                 class_="btn-outline-secondary btn-sm"),
+                          col_widths=(6, 6),
+                      ),
+                ),
+                width=1,
+            ),
+            ui.output_ui("unconfirmed_banner"),
             ui.layout_column_wrap(
                 _card("Processed / Filtered Data",
                       ui.output_data_frame("tbl_filtered"),
@@ -666,14 +691,103 @@ def server(input: Inputs, output: Outputs, session: Session):
         except Exception:
             return None
 
-    @reactive.calc
-    def df_exps():
-        df = raw_df()
+    # ------------------------------------------------------------------ #
+    #  COHORT MAPPING & INFERENCE                                          #
+    # ------------------------------------------------------------------ #
+
+    _cohort_mapping_df = reactive.value(pd.DataFrame())
+    _cohort_confirmed = reactive.value(False)
+    _cohort_confidence = reactive.value(0.0)
+
+    def _compute_initial_mapping(df, hdr, crow_idx):
         if df.empty:
-            return pd.DataFrame()
+            return pd.DataFrame(), 0.0
+        sample_cols = [c for c in df.columns if c != "Sample Name"]
+        if hdr is not None and not hdr.empty:
+            exps_legacy = extract_experiments(df, header_df=hdr, cohort_row_idx=crow_idx)
+            if not exps_legacy.empty:
+                mapping = pd.DataFrame({
+                    "Include": [True] * len(exps_legacy),
+                    "Sample": exps_legacy["Exp"],
+                    "Cohort": exps_legacy["Mutation"],
+                    "Replicate": exps_legacy["Replicate"]
+                })
+                return mapping, 1.0 # Header file is high confidence
+        return suggest_cohort_mapping(sample_cols)
+
+    @reactive.effect
+    @reactive.event(raw_df, header_df, input.cohort_row)
+    def _auto_suggest_cohorts():
+        df = raw_df()
         hdr = header_df()
         crow = max(0, int(input.cohort_row()) - 1) if input.cohort_row() else 1
-        return extract_experiments(df, header_df=hdr, cohort_row_idx=crow)
+        mapping, conf = _compute_initial_mapping(df, hdr, crow)
+        
+        _cohort_mapping_df.set(mapping)
+        _cohort_confirmed.set(False)
+        _cohort_confidence.set(conf)
+
+    @reactive.effect
+    @reactive.event(input.btn_confirm_cohorts)
+    def _confirm_cohorts():
+        _cohort_confirmed.set(True)
+
+    @reactive.effect
+    @reactive.event(input.btn_reset_cohorts)
+    def _reset_cohorts():
+        df = raw_df()
+        hdr = header_df()
+        crow = max(0, int(input.cohort_row()) - 1) if input.cohort_row() else 1
+        mapping, conf = _compute_initial_mapping(df, hdr, crow)
+        
+        _cohort_mapping_df.set(mapping)
+        _cohort_confirmed.set(False)
+        _cohort_confidence.set(conf)
+
+    @reactive.effect
+    def _invalidate_on_edit():
+        try:
+            _ = tbl_cohort_mapping.data_view()
+            _cohort_confirmed.set(False)
+        except AttributeError:
+            pass
+
+    @reactive.calc
+    def finalized_cohort_mapping():
+        try:
+            edited = tbl_cohort_mapping.data_view()
+            if not edited.empty:
+                # Validate that the edited dataframe actually has our expected columns
+                if "Sample" not in edited.columns or "Cohort" not in edited.columns:
+                    print(f"DEBUG: edited dataframe has missing columns: {edited.columns.tolist()}. Falling back.")
+                    return _cohort_mapping_df()
+                return edited
+            return _cohort_mapping_df()
+        except AttributeError:
+            return _cohort_mapping_df()
+
+    @reactive.calc
+    def df_exps():
+        mapping = finalized_cohort_mapping()
+        if mapping.empty:
+            return pd.DataFrame()
+            
+        # Robust boolean coercion
+        if "Include" in mapping.columns:
+            inc = coerce_bool_series(mapping["Include"])
+            mapping_included = mapping[inc]
+        else:
+            mapping_included = mapping
+        
+        if mapping_included.empty:
+            return pd.DataFrame()
+            
+        exps = pd.DataFrame({
+            "Exp":       mapping_included["Sample"].tolist(),
+            "Mutation":  mapping_included["Cohort"].tolist(),
+            "Replicate": mapping_included["Replicate"].tolist(),
+        })
+        return exps
 
     @reactive.calc
     def df_p_full():
@@ -777,22 +891,27 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     @reactive.calc
     def cl_data():
+        if not _cohort_confirmed(): return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         return chain_length_analysis(df_meta(), df_p(), df_cohort())
 
     @reactive.calc
     def us_data():
+        if not _cohort_confirmed(): return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         return unsaturation_analysis(df_meta(), df_p(), df_cohort())
 
     @reactive.calc
     def hg_data():
+        if not _cohort_confirmed(): return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         return headgroup_analysis(df_meta(), df_p(), df_cohort())
 
     @reactive.calc
     def lc_data():
+        if not _cohort_confirmed(): return pd.DataFrame(), pd.DataFrame()
         return lipid_class_analysis(df_meta(), df_cohort())
 
     @reactive.calc
     def stat_result():
+        if not _cohort_confirmed(): return pd.DataFrame(), pd.DataFrame()
         input.btn_run_stat()
         dm = df_meta()
         dp = df_p()
@@ -809,6 +928,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     @reactive.calc
     def pw_stat_result():
+        if not _cohort_confirmed(): return pd.DataFrame()
         input.btn_run_stat()
         dm = df_meta()
         dp = df_p()
@@ -825,16 +945,19 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     @reactive.calc
     def sg_madag_result():
+        if not _cohort_confirmed(): return pd.DataFrame()
         ctrl = input.sg_ctrl()
         return subgroup_analysis(df_meta(), df_p(), df_cohort(), SUBGROUP_MADAG, ctrl)
 
     @reactive.calc
     def sg_sph_result():
+        if not _cohort_confirmed(): return pd.DataFrame()
         ctrl = input.sg_ctrl()
         return subgroup_analysis(df_meta(), df_p(), df_cohort(), SUBGROUP_SPHINGOLIPIDS, ctrl)
 
     @reactive.calc
     def insights_result():
+        if not _cohort_confirmed(): return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         input.btn_run_insights()
         ctrl  = input.ins_ctrl()
         top_n = int(input.ins_top_n())
@@ -894,6 +1017,57 @@ def server(input: Inputs, output: Outputs, session: Session):
             return render.DataGrid(pd.DataFrame({"Info": ["No files loaded."]}))
         return render.DataGrid(exps, width="100%")
 
+    @render.data_frame
+    def tbl_others():
+        others = _others_df()
+        if others is None or others.empty:
+            return render.DataGrid(pd.DataFrame(
+                {"Info": ["No non-lipid compounds removed (or filtering disabled)."]}))
+        # Show just the first few abundance columns for readability
+        cols = list(others.columns[:6])
+        return render.DataGrid(others[cols], width="100%")
+
+    @render.data_frame
+    def tbl_cohort_mapping():
+        mapping = _cohort_mapping_df()
+        if mapping.empty:
+            return render.DataGrid(pd.DataFrame({"Info": ["Upload a file to see cohort mapping."]}))
+        return render.DataTable(mapping, editable=True)
+
+    @render.ui
+    def cohort_confidence_badge():
+        mapping = _cohort_mapping_df()
+        if mapping.empty:
+            return ui.p("")
+        
+        confidence = _cohort_confidence()
+        
+        if confidence >= 0.8:
+            badge = ui.tags.span("Clear replicate naming detected", class_="badge bg-success")
+            msg = "Replicate structure easily mapped."
+        elif confidence >= 0.4:
+            badge = ui.tags.span("Ambiguous sample naming", class_="badge bg-warning")
+            msg = "Some samples could not be grouped into replicates."
+        else:
+            badge = ui.tags.span("No clear replicates detected", class_="badge bg-danger")
+            msg = "Most samples treated as singletons. Please define cohorts manually."
+        
+        confirmed = _cohort_confirmed()
+        status = (ui.tags.span(" ✅ Confirmed", class_="badge bg-success ms-2") if confirmed 
+                  else ui.tags.span(" ⏳ Not confirmed", class_="badge bg-secondary ms-2"))
+        
+        return ui.div(badge, status, ui.p(msg, class_="text-muted small mt-1 mb-3"))
+
+    @render.ui
+    def unconfirmed_banner():
+        if raw_df().empty or _cohort_confirmed():
+            return ui.p("")
+        return ui.div(
+            ui.h6("⚠ Action Required", class_="alert-heading"),
+            ui.p("Cohort mapping not yet confirmed — statistical analyses are temporarily disabled.", class_="mb-0"),
+            class_="alert alert-warning mt-3 mb-3"
+        )
+
     @render.download(filename="filtered_data.csv")
     def dl_filtered():
         dr = df_raw_filt()
@@ -947,6 +1121,12 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     @render.plot
     def plt_pca_ellipse():
+        if not _cohort_confirmed():
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.text(0.5, 0.5, "Replicate structure unconfirmed.\nEllipse statistics disabled until cohort confirmation.",
+                    horizontalalignment='center', verticalalignment='center', fontsize=12)
+            ax.axis('off')
+            return fig
         return plot_pca_2d_replicates(df_p(), df_exps())
 
     @render.download(filename="pca_variance.csv")

@@ -73,6 +73,7 @@ class PreprocessReport:
     failed_numeric_coercions: int = 0
     failed_lipid_parses: int = 0
     duplicates_collapsed: int = 0
+    column_confidence: Dict[str, float] = field(default_factory=dict)
     inferred_cohorts: Dict[str, str] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
 
@@ -173,12 +174,16 @@ def detect_abundance_columns(
     abundance = []
     report = report or PreprocessReport()
 
+    confidence_scores = {}
+
     for col in df.columns:
         if col == lipid_col:
             continue
 
+        col_lower = col.lower().strip()
+        
         # Blacklist check (case-insensitive)
-        if col.lower().strip() in METADATA_BLACKLIST:
+        if col_lower in METADATA_BLACKLIST:
             report.removed_metadata_columns.append(col)
             continue
 
@@ -189,9 +194,30 @@ def detect_abundance_columns(
             report.dropped_nonnumeric_columns.append(col)
             continue
 
+        # Compute confidence score for diagnostic purposes
+        score = 0.0
+        score += valid_frac * 0.4  # Up to 0.4 for being mostly numeric
+        
+        # Variance check
+        valid_vals = numeric_series.dropna()
+        if len(valid_vals) > 1 and valid_vals.std() > 0:
+            score += 0.3  # 0.3 for having variance (not constant)
+            
+        # Keyword check - known metadata substrings that aren't exact blacklist matches
+        suspicious_keywords = ["rt", "mz", "ontology", "formula", "comment", "spectrum", "adduct", "alignment", "ccs", "score", "%", "ratio"]
+        if not any(kw in col_lower for kw in suspicious_keywords):
+            score += 0.3  # 0.3 for not having suspicious substrings
+            
+        confidence_scores[col] = round(score, 2)
         abundance.append(col)
 
+    report.column_confidence = confidence_scores
     report.detected_sample_columns = list(abundance)
+    
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"Detected {len(abundance)} abundance columns. Max confidence: {max(confidence_scores.values()) if confidence_scores else 0}")
+    
     return abundance
 
 
@@ -486,6 +512,139 @@ def heuristic_cohort_from_name(col_name: str) -> Tuple[str, str]:
         replicate = "1"
 
     return mutation, replicate
+
+
+# ---------------------------------------------------------------------------
+# Cohort Suggestion (Replaces silent inference with explicit mapping)
+# ---------------------------------------------------------------------------
+
+def suggest_cohort_mapping(sample_columns: List[str]) -> Tuple[pd.DataFrame, float]:
+    """
+    Intelligently infer cohort groups and replicates from sample column names.
+    Follows conservative "under-grouping is safer" rule.
+    
+    Returns
+    -------
+    mapping_df : pd.DataFrame
+        Columns: ["Include", "Sample", "Cohort", "Replicate"]
+    confidence : float
+        Overall confidence score (0.0 to 1.0)
+    """
+    if not sample_columns:
+        return pd.DataFrame(columns=["Include", "Sample", "Cohort", "Replicate"]), 0.0
+
+    records = []
+    
+    # Pass 1: Try strict suffix stripping for replicate detection
+    # Looks for clearly separated numbers at the end (1-3 digits): -1, _2, rep3
+    strict_rep_pattern = re.compile(r"[-_ ](?:rep)?\s*(\d{1,3})$", re.IGNORECASE)
+    
+    groups = {}
+    for col in sample_columns:
+        # Strip instrument prefixes first to find the real base name
+        base_col = _INSTRUMENT_PREFIXES.sub("", col)
+        
+        m = strict_rep_pattern.search(base_col)
+        if m:
+            cohort_name = base_col[:m.start()].strip()
+            rep_num = m.group(1)
+            # Avoid making empty cohorts
+            if not cohort_name:
+                cohort_name = base_col
+                rep_num = "1"
+        else:
+            cohort_name = base_col
+            rep_num = "1"
+            
+        groups.setdefault(cohort_name, []).append((col, rep_num))
+
+    # Review groups. If a group only has 1 item, it's a singleton.
+    # If a group has multiple items, verify they have distinct replicates.
+    final_records = []
+    replicate_groups_count = 0
+    singleton_count = 0
+    total_samples = len(sample_columns)
+    
+    for cohort, members in groups.items():
+        if len(members) > 1:
+            # We have potential replicates
+            rep_nums = [m[1] for m in members]
+            # Are the replicates unique?
+            if len(set(rep_nums)) == len(rep_nums):
+                # Good replicate group
+                replicate_groups_count += 1
+                for col, rep in members:
+                    final_records.append({
+                        "Include": True,
+                        "Sample": col,
+                        "Cohort": cohort,
+                        "Replicate": rep
+                    })
+            else:
+                # Replicate numbers clash. This means our splitting was likely wrong.
+                # E.g. "LN-1", "LN-1" (shouldn't happen with unique cols, but just in case)
+                # Fall back to sequential replicates
+                replicate_groups_count += 1
+                for i, (col, _) in enumerate(members):
+                    final_records.append({
+                        "Include": True,
+                        "Sample": col,
+                        "Cohort": cohort,
+                        "Replicate": str(i + 1)
+                    })
+        else:
+            # Singleton. Don't aggressively merge it with something else.
+            singleton_count += 1
+            col, rep = members[0]
+            final_records.append({
+                "Include": True,
+                "Sample": col,
+                "Cohort": cohort,
+                "Replicate": "1"
+            })
+
+    # Calculate Confidence
+    # High confidence: Most samples belong to groups with >1 replicate
+    grouped_samples = total_samples - singleton_count
+    
+    if total_samples == 0:
+        confidence = 0.0
+    elif grouped_samples == total_samples and replicate_groups_count > 0:
+        confidence = 0.9  # Perfect grouping
+    elif grouped_samples > total_samples * 0.5:
+        confidence = 0.6  # Mostly grouped
+    elif grouped_samples > 0:
+        confidence = 0.3  # Barely grouped
+    else:
+        confidence = 0.1  # All singletons
+        
+    logger.info(f"Cohort inference: {total_samples} samples, {replicate_groups_count} groups, {singleton_count} singletons. Confidence: {confidence}")
+        
+    df_mapping = pd.DataFrame(final_records, columns=["Include", "Sample", "Cohort", "Replicate"])
+    
+    # Sort to match original column order
+    col_order = {c: i for i, c in enumerate(sample_columns)}
+    df_mapping["_order"] = df_mapping["Sample"].map(col_order)
+    df_mapping = df_mapping.sort_values("_order").drop(columns=["_order"]).reset_index(drop=True)
+    
+    return df_mapping, confidence
+
+
+def coerce_bool_series(series: pd.Series) -> pd.Series:
+    """
+    Robustly convert a pandas Series containing mixed boolean/string/integer 
+    representations of truthy/falsy values into a strict boolean Series.
+    Used for safe DataGrid/DataTable roundtrip coercion.
+    """
+    if series.dtype == bool:
+        return series
+        
+    # Convert to lowercase strings and strip whitespace
+    s_str = series.astype(str).str.lower().str.strip()
+    
+    truthy_vals = {"true", "1", "t", "yes", "y", "1.0"}
+    
+    return s_str.isin(truthy_vals)
 
 
 # ---------------------------------------------------------------------------

@@ -470,3 +470,64 @@ def test_preprocess_report_summary_lines():
     assert any("Metabolite name" in l for l in lines)
     assert any("3" in l for l in lines)  # 3 sample columns
     assert any("2" in l for l in lines)  # 2 metadata cols or 2 failed parses
+
+
+# ---------------------------------------------------------------------------
+# 13. Cohort Suggestion
+# ---------------------------------------------------------------------------
+
+def test_suggest_cohort_mapping_edge_cases():
+    from app.preprocessing import suggest_cohort_mapping
+
+    # Test Patient-2024 edge case (year shouldn't be parsed as replicate due to length limit 3)
+    cols1 = ["Patient-2024", "Patient-2025"]
+    df1, conf1 = suggest_cohort_mapping(cols1)
+    
+    # Because 2024 is 4 digits, it shouldn't match \d{1,3}$
+    assert df1.loc[0, "Cohort"] == "Patient-2024"
+    assert df1.loc[0, "Replicate"] == "1"
+    assert df1.loc[1, "Cohort"] == "Patient-2025"
+    
+    # Test Sample-10h edge case (alpha suffix shouldn't match \d+$)
+    cols2 = ["Sample-10h", "Sample-12h"]
+    df2, conf2 = suggest_cohort_mapping(cols2)
+    assert df2.loc[0, "Cohort"] == "Sample-10h"
+    assert df2.loc[0, "Replicate"] == "1"
+
+    # Test standard replicates
+    cols3 = ["LN-1", "LN-2", "LN-3"]
+    df3, conf3 = suggest_cohort_mapping(cols3)
+    assert df3.loc[0, "Cohort"] == "LN"
+    assert df3.loc[0, "Replicate"] == "1"
+    assert df3.loc[2, "Replicate"] == "3"
+    assert conf3 > 0.8  # High confidence for perfect grouping
+
+
+def test_coerce_bool_series():
+    from app.preprocessing import coerce_bool_series
+    import pandas as pd
+    
+    # Mixed representations common in editable tables
+    s = pd.Series([
+        True, False, 
+        "True", "False", 
+        "true", "false", 
+        "1", "0", 
+        1, 0,
+        "yes", "no",
+        " t ", " f "
+    ])
+    
+    result = coerce_bool_series(s)
+    
+    expected = pd.Series([
+        True, False,
+        True, False,
+        True, False,
+        True, False,
+        True, False,
+        True, False,
+        True, False
+    ])
+    
+    pd.testing.assert_series_equal(result, expected, check_names=False)
