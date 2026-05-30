@@ -141,11 +141,73 @@ def _card(title, *contents, id=None):
                    id=id, full_screen=True)
 
 
+def plot_toolbar_ui(plot_id):
+    return ui.output_ui(f"tb_{plot_id}")
+
+
+def bulk_export_controls(tab_id):
+    return ui.div(
+        ui.layout_columns(
+            ui.div(
+                ui.tags.span("📦 Bulk Export: ", style="font-weight: bold;"),
+                "Download all plots in this tab as a single ZIP archive.",
+                style="display: flex; align-items: center; height: 100%;"
+            ),
+            ui.div(
+                ui.div(
+                    ui.input_select(f"bulk_fmt_{tab_id}", "", {
+                        "png300": "PNG (300 DPI)",
+                        "png600": "PNG (600 DPI)",
+                        "pdf": "PDF (Vector)",
+                        "svg": "SVG (Vector)",
+                        "eps": "EPS (Vector - No Transparency)"
+                    }),
+                    style="width: 220px; display: inline-block; margin-bottom: 0;"
+                ),
+                ui.download_button(f"dl_zip_{tab_id}", "Download All (ZIP)", class_="btn-sm btn-primary ms-2"),
+                style="display: flex; align-items: center; justify-content: flex-end;"
+            ),
+            col_widths=(8, 4),
+            class_="align-items-center"
+        ),
+        class_="card p-2 bg-light mb-4"
+    )
+
+
+
 # ---------------------------------------------------------------------------
 # UI definition
 # ---------------------------------------------------------------------------
 
 app_ui = ui.page_navbar(
+    ui.head_content(
+        ui.tags.style("""
+            .plot-toolbar-container {
+                display: flex;
+                justify-content: flex-end;
+                padding-top: 8px;
+                border-top: 1px solid #f0f0f0;
+                margin-top: 5px;
+            }
+            .dropdown-menu {
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+                border: 1px solid rgba(0, 0, 0, 0.15);
+                border-radius: 6px;
+                z-index: 1050;
+            }
+            .dropdown-item {
+                font-size: 0.85rem;
+                padding: 6px 16px;
+                cursor: pointer;
+            }
+            .dropdown-item:hover {
+                background-color: #f8f9fa;
+            }
+            .dropdown-divider {
+                margin: 4px 0;
+            }
+        """)
+    ),
 
     # ===========================  Tab 1: Upload  ===========================
     ui.nav_panel(
@@ -283,18 +345,19 @@ app_ui = ui.page_navbar(
     # ===========================  Tab 2: PCA  ==============================
     ui.nav_panel(
         "📊 PCA",
+        bulk_export_controls("pca"),
         ui.layout_column_wrap(
-            _card("Explained Variance", ui.output_plot("plt_pca_var")),
+            _card("Explained Variance", ui.output_plot("plt_pca_var"), plot_toolbar_ui("plt_pca_var")),
             width=1,
         ),
         ui.layout_column_wrap(
-            _card("PCA — 2D Scores (PC1 vs PC2)", ui.output_plot("plt_pca_2d")),
-            _card("PCA — 3D Scores",              ui.output_plot("plt_pca_3d")),
+            _card("PCA — 2D Scores (PC1 vs PC2)", ui.output_plot("plt_pca_2d"), plot_toolbar_ui("plt_pca_2d")),
+            _card("PCA — 3D Scores",              ui.output_plot("plt_pca_3d"), plot_toolbar_ui("plt_pca_3d")),
             width="1/2",
         ),
         ui.layout_column_wrap(
             _card("PCA — Replicate Scatter with 95% Confidence Ellipses",
-                  ui.output_plot("plt_pca_ellipse")),
+                  ui.output_plot("plt_pca_ellipse"), plot_toolbar_ui("plt_pca_ellipse")),
             width=1,
         ),
         ui.layout_column_wrap(
@@ -310,35 +373,36 @@ app_ui = ui.page_navbar(
     # ========================  Tab 3: Chain Length  ========================
     ui.nav_panel(
         "⛓ Chain Length",
+        bulk_export_controls("cl"),
         ui.layout_column_wrap(
             _card("KDE / Histogram — Chain Length Distribution",
-                  ui.output_plot("plt_cl_kde")),
+                  ui.output_plot("plt_cl_kde"), plot_toolbar_ui("plt_cl_kde")),
             width=1,
         ),
         ui.layout_column_wrap(
-            _card("Z-score Heatmap",         ui.output_plot("plt_cl_zscore")),
-            _card("Correlation Matrix",      ui.output_plot("plt_cl_corr")),
+            _card("Z-score Heatmap",         ui.output_plot("plt_cl_zscore"), plot_toolbar_ui("plt_cl_zscore")),
+            _card("Correlation Matrix",      ui.output_plot("plt_cl_corr"), plot_toolbar_ui("plt_cl_corr")),
             width="1/2",
         ),
         ui.layout_column_wrap(
-            _card("Proportions Heatmap",     ui.output_plot("plt_cl_prop")),
+            _card("Proportions Heatmap",     ui.output_plot("plt_cl_prop"), plot_toolbar_ui("plt_cl_prop")),
             _card("Fold Change vs Control",
                   ui.layout_sidebar(
                       ui.sidebar(ui.input_select("cl_ctrl", "Control:", choices=[]),
                                  width=200),
-                      ui.output_plot("plt_cl_fc"))),
+                      ui.output_plot("plt_cl_fc"), plot_toolbar_ui("plt_cl_fc"))),
             width="1/2",
         ),
         ui.layout_column_wrap(
             _card("Gaussian Fit — Chain Length Distribution",
-                  ui.output_plot("plt_cl_gauss")),
+                  ui.output_plot("plt_cl_gauss"), plot_toolbar_ui("plt_cl_gauss")),
             width=1,
         ),
         ui.layout_column_wrap(
             _card("Odd-Chain Lipid Fraction by Cohort",
-                  ui.output_plot("plt_odd_chain")),
+                  ui.output_plot("plt_odd_chain"), plot_toolbar_ui("plt_odd_chain")),
             _card("Odd-Chain Length KDE",
-                  ui.output_plot("plt_odd_cl_kde")),
+                  ui.output_plot("plt_odd_cl_kde"), plot_toolbar_ui("plt_odd_cl_kde")),
             width="1/2",
         ),
         ui.layout_column_wrap(
@@ -350,11 +414,11 @@ app_ui = ui.page_navbar(
         ),
         ui.layout_column_wrap(
             _card("Head Groups — Chain Length ≥ 50",
-                  ui.output_plot("plt_cl_ge50")),
+                  ui.output_plot("plt_cl_ge50"), plot_toolbar_ui("plt_cl_ge50")),
             _card("Head Groups — Chain Length ≤ 30",
-                  ui.output_plot("plt_cl_le30")),
+                  ui.output_plot("plt_cl_le30"), plot_toolbar_ui("plt_cl_le30")),
             _card("Head Groups — Chain Length ≤ 20",
-                  ui.output_plot("plt_cl_le20")),
+                  ui.output_plot("plt_cl_le20"), plot_toolbar_ui("plt_cl_le20")),
             width="1/3",
         ),
     ),
@@ -362,32 +426,33 @@ app_ui = ui.page_navbar(
     # =======================  Tab 4: Unsaturation  ========================
     ui.nav_panel(
         "〰 Unsaturation",
+        bulk_export_controls("us"),
         ui.layout_column_wrap(
             _card("KDE / Histogram — Unsaturation Distribution",
-                  ui.output_plot("plt_us_kde")),
+                  ui.output_plot("plt_us_kde"), plot_toolbar_ui("plt_us_kde")),
             width=1,
         ),
         ui.layout_column_wrap(
-            _card("Z-score Heatmap",    ui.output_plot("plt_us_zscore")),
-            _card("Correlation Matrix", ui.output_plot("plt_us_corr")),
+            _card("Z-score Heatmap",    ui.output_plot("plt_us_zscore"), plot_toolbar_ui("plt_us_zscore")),
+            _card("Correlation Matrix", ui.output_plot("plt_us_corr"), plot_toolbar_ui("plt_us_corr")),
             width="1/2",
         ),
         ui.layout_column_wrap(
-            _card("Proportions Heatmap", ui.output_plot("plt_us_prop")),
+            _card("Proportions Heatmap", ui.output_plot("plt_us_prop"), plot_toolbar_ui("plt_us_prop")),
             _card("Fold Change vs Control",
                   ui.layout_sidebar(
                       ui.sidebar(ui.input_select("us_ctrl", "Control:", choices=[]),
                                  width=200),
-                      ui.output_plot("plt_us_fc"))),
+                      ui.output_plot("plt_us_fc"), plot_toolbar_ui("plt_us_fc"))),
             width="1/2",
         ),
         ui.layout_column_wrap(
             _card("Saturated (0 db) — Head Group Distribution",
-                  ui.output_plot("plt_us_sat")),
+                  ui.output_plot("plt_us_sat"), plot_toolbar_ui("plt_us_sat")),
             _card("Monounsaturated (1–2 db) — Head Group Distribution",
-                  ui.output_plot("plt_us_mono")),
+                  ui.output_plot("plt_us_mono"), plot_toolbar_ui("plt_us_mono")),
             _card("Polyunsaturated (≥3 db) — Head Group Distribution",
-                  ui.output_plot("plt_us_poly")),
+                  ui.output_plot("plt_us_poly"), plot_toolbar_ui("plt_us_poly")),
             width="1/3",
         ),
     ),
@@ -395,26 +460,27 @@ app_ui = ui.page_navbar(
     # ========================  Tab 5: Head Group  ==========================
     ui.nav_panel(
         "🧬 Head Group",
+        bulk_export_controls("hg"),
         ui.layout_column_wrap(
             _card("Head Group Distribution (Donut)",
-                  ui.output_plot("plt_hg_donut")),
+                  ui.output_plot("plt_hg_donut"), plot_toolbar_ui("plt_hg_donut")),
             _card("Z-score Heatmap",
-                  ui.output_plot("plt_hg_zscore")),
+                  ui.output_plot("plt_hg_zscore"), plot_toolbar_ui("plt_hg_zscore")),
             width="1/2",
         ),
         ui.layout_column_wrap(
             _card("Correlation Matrix",
-                  ui.output_plot("plt_hg_corr")),
+                  ui.output_plot("plt_hg_corr"), plot_toolbar_ui("plt_hg_corr")),
             _card("Fold Change vs Control",
                   ui.layout_sidebar(
                       ui.sidebar(ui.input_select("hg_ctrl", "Control:", choices=[]),
                                  width=200),
-                      ui.output_plot("plt_hg_fc"))),
+                      ui.output_plot("plt_hg_fc"), plot_toolbar_ui("plt_hg_fc"))),
             width="1/2",
         ),
         ui.layout_column_wrap(
             _card("Proportions Heatmap",
-                  ui.output_plot("plt_hg_prop")),
+                  ui.output_plot("plt_hg_prop"), plot_toolbar_ui("plt_hg_prop")),
             width=1,
         ),
         ui.layout_column_wrap(
@@ -423,7 +489,7 @@ app_ui = ui.page_navbar(
                       ui.sidebar(
                           ui.input_select("hg_bar_group", "Head Group:", choices=[]),
                           width=200),
-                      ui.output_plot("plt_hg_bar"))),
+                      ui.output_plot("plt_hg_bar"), plot_toolbar_ui("plt_hg_bar"))),
             width=1,
         ),
     ),
@@ -431,21 +497,22 @@ app_ui = ui.page_navbar(
     # ========================  Tab 6: Lipid Class  =========================
     ui.nav_panel(
         "🫧 Lipid Class",
+        bulk_export_controls("lc"),
         ui.layout_column_wrap(
             _card("Lipid Class Distribution (Pie)",
-                  ui.output_plot("plt_lc_pie")),
+                  ui.output_plot("plt_lc_pie"), plot_toolbar_ui("plt_lc_pie")),
             _card("Z-score Heatmap",
-                  ui.output_plot("plt_lc_zscore")),
+                  ui.output_plot("plt_lc_zscore"), plot_toolbar_ui("plt_lc_zscore")),
             width="1/2",
         ),
         ui.layout_column_wrap(
             _card("Normalised Proportions Heatmap",
-                  ui.output_plot("plt_lc_prop")),
+                  ui.output_plot("plt_lc_prop"), plot_toolbar_ui("plt_lc_prop")),
             _card("Fold Change vs Control",
                   ui.layout_sidebar(
                       ui.sidebar(ui.input_select("lc_ctrl", "Control:", choices=[]),
                                  width=200),
-                      ui.output_plot("plt_lc_fc"))),
+                      ui.output_plot("plt_lc_fc"), plot_toolbar_ui("plt_lc_fc"))),
             width="1/2",
         ),
     ),
@@ -505,25 +572,26 @@ app_ui = ui.page_navbar(
                 ui.input_select("sg_ctrl", "Control cohort:", choices=[]),
                 width=220,
             ),
+            bulk_export_controls("sg"),
             ui.h4("MADAG (MAG / DAG / TAG)"),
             ui.layout_column_wrap(
                 _card("MADAG — Proportions Heatmap",
-                      ui.output_plot("plt_sg_madag_prop")),
+                      ui.output_plot("plt_sg_madag_prop"), plot_toolbar_ui("plt_sg_madag_prop")),
                 _card("MADAG — Log Fold Change",
-                      ui.output_plot("plt_sg_madag_fc")),
+                      ui.output_plot("plt_sg_madag_fc"), plot_toolbar_ui("plt_sg_madag_fc")),
                 _card("MADAG — Z-score",
-                      ui.output_plot("plt_sg_madag_z")),
+                      ui.output_plot("plt_sg_madag_z"), plot_toolbar_ui("plt_sg_madag_z")),
                 width="1/3",
             ),
             ui.hr(),
             ui.h4("Sphingolipids (Cer / HexCer / SM / GM)"),
             ui.layout_column_wrap(
                 _card("Sphingolipids — Proportions Heatmap",
-                      ui.output_plot("plt_sg_sph_prop")),
+                      ui.output_plot("plt_sg_sph_prop"), plot_toolbar_ui("plt_sg_sph_prop")),
                 _card("Sphingolipids — Log Fold Change",
-                      ui.output_plot("plt_sg_sph_fc")),
+                      ui.output_plot("plt_sg_sph_fc"), plot_toolbar_ui("plt_sg_sph_fc")),
                 _card("Sphingolipids — Z-score",
-                      ui.output_plot("plt_sg_sph_z")),
+                      ui.output_plot("plt_sg_sph_z"), plot_toolbar_ui("plt_sg_sph_z")),
                 width="1/3",
             ),
         ),
@@ -576,6 +644,26 @@ app_ui = ui.page_navbar(
 )
 
 
+def plot_hg_abundance_bar(d, grp):
+    if not d or not grp:
+        fig, ax = plt.subplots(); ax.text(0.5, 0.5, "Select a head group", ha="center", va="center")
+        return fig
+    raw = d["cohort_raw"]
+    if grp not in raw.index:
+        fig, ax = plt.subplots(); ax.text(0.5, 0.5, f"'{grp}' not found", ha="center", va="center")
+        return fig
+    row    = raw.loc[grp]
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+              "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+    fig, ax = plt.subplots(figsize=(8, 4))
+    for i, (coh, val) in enumerate(row.items()):
+        ax.bar(coh, val, color=colors[i % len(colors)], edgecolor="white")
+    ax.set_ylabel("Abundance (sum)")
+    ax.set_title(f"{grp} — Abundance by Cohort")
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha="right")
+    fig.tight_layout(); return fig
+
+
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
@@ -585,6 +673,8 @@ def server(input: Inputs, output: Outputs, session: Session):
     # ------------------------------------------------------------------ #
     #  REACTIVE CALCULATIONS                                               #
     # ------------------------------------------------------------------ #
+
+    current_enlarged_plot = reactive.value(None)
 
     # Reactive value to hold preprocessing report lines for the UI
     _preprocess_report_lines = reactive.value([])
@@ -1148,6 +1238,8 @@ def server(input: Inputs, output: Outputs, session: Session):
         fig, ax = plt.subplots(); ax.text(0.5, 0.5, msg, ha="center", va="center")
         return fig
 
+
+
     @render.plot
     def plt_cl_kde():
         d = cl_data()
@@ -1321,23 +1413,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     @render.plot
     def plt_hg_bar():
-        d   = hg_data()
-        grp = input.hg_bar_group()
-        if not d or not grp:
-            return _empty_plot("Select a head group")
-        raw = d["cohort_raw"]
-        if grp not in raw.index:
-            return _empty_plot(f"'{grp}' not found")
-        row    = raw.loc[grp]
-        colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-                  "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
-        fig, ax = plt.subplots(figsize=(8, 4))
-        for i, (coh, val) in enumerate(row.items()):
-            ax.bar(coh, val, color=colors[i % len(colors)], edgecolor="white")
-        ax.set_ylabel("Abundance (sum)")
-        ax.set_title(f"{grp} — Abundance by Cohort")
-        ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha="right")
-        fig.tight_layout(); return fig
+        return plot_hg_abundance_bar(hg_data(), input.hg_bar_group())
 
     # ------------------------------------------------------------------ #
     #  TAB 6 — LIPID CLASS                                                 #
@@ -1489,6 +1565,314 @@ def server(input: Inputs, output: Outputs, session: Session):
         _, spec_df = insights_result()
         yield (spec_df.to_csv(index=False)
                if spec_df is not None and not spec_df.empty else "")
+
+    plot_registry = {
+        # PCA Tab
+        "plt_pca_var": lambda: plot_pca_variance(pca_result()[1]),
+        "plt_pca_2d": lambda: plot_pca_2d(pca_result()[0]),
+        "plt_pca_3d": lambda: plot_pca_3d(pca_result()[0]),
+        "plt_pca_ellipse": lambda: plot_pca_2d_replicates(df_p(), df_exps()) if _cohort_confirmed() else _empty_plot("Replicate structure unconfirmed"),
+
+        # Chain Length Tab
+        "plt_cl_kde": lambda: plot_kde_histogram(cl_data()['long'], 'Acyl Chain Length', 'Mutation', 'Chain Length Distribution', 'Acyl Chain Length') if cl_data() else _empty_plot(),
+        "plt_cl_zscore": lambda: plot_zscore_heatmap(cl_data().get('cohort_z'), 'Chain Length Z-scores') if cl_data() else _empty_plot(),
+        "plt_cl_corr": lambda: plot_correlation_heatmap(cl_data().get('cohort_raw'), 'Correlation — Chain Lengths') if cl_data() else _empty_plot(),
+        "plt_cl_prop": lambda: plot_heatmap_general(cl_data().get('cohort_prop'), 'Chain Length Proportions', cmap='YlOrRd') if cl_data() else _empty_plot(),
+        "plt_cl_fc": lambda: plot_fold_change_heatmap(cl_fc_data(), f"Chain Length log FC vs {input.cl_ctrl()}") if cl_fc_data() else _empty_plot(),
+        "plt_cl_gauss": lambda: plot_cl_gaussian_fit(cl_data().get('long')) if cl_data() else _empty_plot(),
+        "plt_odd_chain": lambda: plot_odd_chain_bar(odd_chain_fraction(df_meta(), df_cohort())) if not df_cohort().empty else _empty_plot(),
+        "plt_odd_cl_kde": lambda: plot_odd_chain_kde(df_meta(), df_p()) if not df_p().empty else _empty_plot(),
+        "plt_cl_ge50": lambda: plot_heatmap_general(cl_ge50_data(), 'Head Groups — Chain Length ≥ 50', cmap='YlOrRd') if cl_ge50_data() is not None else _empty_plot(),
+        "plt_cl_le30": lambda: plot_heatmap_general(cl_le30_data(), 'Head Groups — Chain Length ≤ 30', cmap='YlOrRd') if cl_le30_data() is not None else _empty_plot(),
+        "plt_cl_le20": lambda: plot_heatmap_general(cl_le20_data(), 'Head Groups — Chain Length ≤ 20', cmap='YlOrRd') if cl_le20_data() is not None else _empty_plot(),
+
+        # Unsaturation Tab
+        "plt_us_kde": lambda: plot_kde_histogram(us_data()['long'], 'Unsaturation', 'Mutation', 'Unsaturation Distribution', 'Unsaturation (# db)') if us_data() else _empty_plot(),
+        "plt_us_zscore": lambda: plot_zscore_heatmap(us_data().get('cohort_z'), 'Unsaturation Z-scores') if us_data() else _empty_plot(),
+        "plt_us_corr": lambda: plot_correlation_heatmap(us_data().get('cohort_raw'), 'Correlation — Unsaturation Levels') if us_data() else _empty_plot(),
+        "plt_us_prop": lambda: plot_heatmap_general(us_data().get('cohort_prop'), 'Unsaturation Proportions', cmap='YlOrRd') if us_data() else _empty_plot(),
+        "plt_us_fc": lambda: plot_fold_change_heatmap(us_fc_data(), f"Unsaturation log FC vs {input.us_ctrl()}") if us_fc_data() else _empty_plot(),
+        "plt_us_sat": lambda: plot_heatmap_general(us_sat_data(), 'Head Groups — Saturated (0 db)', cmap='YlOrRd') if us_sat_data() is not None else _empty_plot(),
+        "plt_us_mono": lambda: plot_heatmap_general(us_mono_data(), 'Head Groups — Monounsaturated (1–2 db)', cmap='YlOrRd') if us_mono_data() is not None else _empty_plot(),
+        "plt_us_poly": lambda: plot_heatmap_general(us_poly_data(), 'Head Groups — Polyunsaturated (≥3 db)', cmap='YlOrRd') if us_poly_data() is not None else _empty_plot(),
+
+        # Head Group Tab
+        "plt_hg_donut": lambda: plot_donut_chart(hg_mean_prop(), 'Average Head Group Distribution') if hg_mean_prop() is not None else _empty_plot(),
+        "plt_hg_zscore": lambda: plot_zscore_heatmap(hg_data().get('cohort_z'), 'Head Group Z-scores') if hg_data() else _empty_plot(),
+        "plt_hg_corr": lambda: plot_correlation_heatmap(hg_data().get('cohort_raw'), 'Correlation — Head Groups') if hg_data() else _empty_plot(),
+        "plt_hg_fc": lambda: plot_fold_change_heatmap(hg_fc_data(), f"Head Group log FC vs {input.hg_ctrl()}") if hg_fc_data() else _empty_plot(),
+        "plt_hg_prop": lambda: plot_heatmap_general(hg_data().get('cohort_prop'), 'Head Group Proportions', cmap='YlOrRd') if hg_data() else _empty_plot(),
+        "plt_hg_bar": lambda: plot_hg_abundance_bar(hg_data(), input.hg_bar_group()),
+
+        # Lipid Class Tab
+        "plt_lc_pie": lambda: plot_pie_chart(lc_mean_prop(), 'Lipid Class Distribution') if lc_mean_prop() is not None else _empty_plot(),
+        "plt_lc_zscore": lambda: plot_zscore_heatmap(lc_data().get('zscore'), 'Lipid Class Z-scores') if lc_data() else _empty_plot(),
+        "plt_lc_prop": lambda: plot_heatmap_general(lc_data().get('prop'), 'Lipid Class Normalised Proportions', cmap='YlOrRd') if lc_data() else _empty_plot(),
+        "plt_lc_fc": lambda: plot_fold_change_heatmap(lc_fc_data(), f"Lipid Class log FC vs {input.lc_ctrl()}") if lc_fc_data() else _empty_plot(),
+
+        # Sub-groups Tab
+        "plt_sg_madag_prop": lambda: plot_heatmap_general(sg_madag_result().get('prop'), 'MADAG — Proportions', cmap='YlOrRd') if sg_madag_result() else _empty_plot(),
+        "plt_sg_madag_fc": lambda: plot_fold_change_heatmap(sg_madag_result().get('logfc'), 'MADAG — Log Fold Change') if sg_madag_result() else _empty_plot(),
+        "plt_sg_madag_z": lambda: plot_zscore_heatmap(sg_madag_result().get('zscore'), 'MADAG — Z-score') if sg_madag_result() else _empty_plot(),
+        "plt_sg_sph_prop": lambda: plot_heatmap_general(sg_sph_result().get('prop'), 'Sphingolipids — Proportions', cmap='YlOrRd') if sg_sph_result() else _empty_plot(),
+        "plt_sg_sph_fc": lambda: plot_fold_change_heatmap(sg_sph_result().get('logfc'), 'Sphingolipids — Log Fold Change') if sg_sph_result() else _empty_plot(),
+        "plt_sg_sph_z": lambda: plot_zscore_heatmap(sg_sph_result().get('zscore'), 'Sphingolipids — Z-score') if sg_sph_result() else _empty_plot(),
+    }
+
+    plot_metadata = {
+        "plt_pca_var": {"filename": "pca_explained_variance", "gated": False},
+        "plt_pca_2d": {"filename": "pca_2d_scores", "gated": False},
+        "plt_pca_3d": {"filename": "pca_3d_scores", "gated": False},
+        "plt_pca_ellipse": {"filename": "pca_replicate_ellipses", "gated": True},
+        "plt_cl_kde": {"filename": "chain_length_kde", "gated": True},
+        "plt_cl_zscore": {"filename": "chain_length_zscore", "gated": True},
+        "plt_cl_corr": {"filename": "chain_length_correlation", "gated": True},
+        "plt_cl_prop": {"filename": "chain_length_proportions", "gated": True},
+        "plt_cl_fc": {"filename": "chain_length_fold_change", "gated": True},
+        "plt_cl_gauss": {"filename": "chain_length_gaussian_fit", "gated": True},
+        "plt_odd_chain": {"filename": "odd_chain_lipid_fraction", "gated": True},
+        "plt_odd_cl_kde": {"filename": "odd_chain_length_kde", "gated": True},
+        "plt_cl_ge50": {"filename": "chain_length_ge50_headgroups", "gated": True},
+        "plt_cl_le30": {"filename": "chain_length_le30_headgroups", "gated": True},
+        "plt_cl_le20": {"filename": "chain_length_le20_headgroups", "gated": True},
+        "plt_us_kde": {"filename": "unsaturation_kde", "gated": True},
+        "plt_us_zscore": {"filename": "unsaturation_zscore", "gated": True},
+        "plt_us_corr": {"filename": "unsaturation_correlation", "gated": True},
+        "plt_us_prop": {"filename": "unsaturation_proportions", "gated": True},
+        "plt_us_fc": {"filename": "unsaturation_fold_change", "gated": True},
+        "plt_us_sat": {"filename": "unsaturation_sat_headgroups", "gated": True},
+        "plt_us_mono": {"filename": "unsaturation_mono_headgroups", "gated": True},
+        "plt_us_poly": {"filename": "unsaturation_poly_headgroups", "gated": True},
+        "plt_hg_donut": {"filename": "head_group_donut_chart", "gated": True},
+        "plt_hg_zscore": {"filename": "head_group_zscore", "gated": True},
+        "plt_hg_corr": {"filename": "head_group_correlation", "gated": True},
+        "plt_hg_fc": {"filename": "head_group_fold_change", "gated": True},
+        "plt_hg_prop": {"filename": "head_group_proportions", "gated": True},
+        "plt_hg_bar": {"filename": "head_group_abundance_bar", "gated": True},
+        "plt_lc_pie": {"filename": "lipid_class_pie_chart", "gated": True},
+        "plt_lc_zscore": {"filename": "lipid_class_zscore", "gated": True},
+        "plt_lc_prop": {"filename": "lipid_class_proportions", "gated": True},
+        "plt_lc_fc": {"filename": "lipid_class_fold_change", "gated": True},
+        "plt_sg_madag_prop": {"filename": "subgroup_madag_proportions", "gated": True},
+        "plt_sg_madag_fc": {"filename": "subgroup_madag_fold_change", "gated": True},
+        "plt_sg_madag_z": {"filename": "subgroup_madag_zscore", "gated": True},
+        "plt_sg_sph_prop": {"filename": "subgroup_sphingolipids_proportions", "gated": True},
+        "plt_sg_sph_fc": {"filename": "subgroup_sphingolipids_fold_change", "gated": True},
+        "plt_sg_sph_z": {"filename": "subgroup_sphingolipids_zscore", "gated": True},
+    }
+
+    HEATMAPS = {
+        "plt_cl_zscore", "plt_cl_corr", "plt_cl_prop", "plt_cl_fc", "plt_cl_ge50", "plt_cl_le30", "plt_cl_le20",
+        "plt_us_zscore", "plt_us_corr", "plt_us_prop", "plt_us_fc", "plt_us_sat", "plt_us_mono", "plt_us_poly",
+        "plt_hg_zscore", "plt_hg_corr", "plt_hg_fc", "plt_hg_prop",
+        "plt_lc_zscore", "plt_lc_prop", "plt_lc_fc",
+        "plt_sg_madag_prop", "plt_sg_madag_fc", "plt_sg_madag_z",
+        "plt_sg_sph_prop", "plt_sg_sph_fc", "plt_sg_sph_z"
+    }
+
+    # Modal observers and renderers
+    @reactive.effect
+    @reactive.event(input.enlarge_plot_id)
+    def _show_enlargement_modal():
+        pid = input.enlarge_plot_id()
+        if not pid:
+            return
+        current_enlarged_plot.set(pid)
+        ui.modal_show(
+            ui.modal(
+                ui.div(
+                    ui.output_ui("scale_style"),
+                    ui.div(
+                        ui.input_slider("enlarge_scale", "Enlarge Scale", min=100, max=800, value=100, step=50, post="%"),
+                        style="margin-bottom: 15px;"
+                    ),
+                    ui.div(
+                        ui.div(
+                            ui.output_ui("enlarged_plot_content"),
+                            id="enlarged_plot_inner",
+                            style="margin: 0 auto; padding: 10px; transition: width 0.1s ease-out;"
+                        ),
+                        style="overflow: auto; max-height: 70vh; max-width: 100%; border: 1px solid #ccc; background: white; text-align: center; position: relative;"
+                    ),
+                    style="display: flex; flex-direction: column;"
+                ),
+                title=f"Enlarge Plot — {plot_metadata[pid]['filename']}",
+                size="xl",
+                easy_close=True,
+                footer=ui.modal_button("Close")
+            )
+        )
+
+    @render.ui
+    def scale_style():
+        scale = input.enlarge_scale() or 100
+        width_px = int(600 * (scale / 100.0))
+        return ui.tags.style(f"""
+            #enlarged_plot_inner {{
+                width: {width_px}px !important;
+            }}
+        """)
+
+    @render.ui
+    def enlarged_plot_content():
+        import base64
+        pid = current_enlarged_plot()
+        if not pid:
+            return ui.p("No plot selected")
+        
+        # Get figure from registry
+        fig = plot_registry[pid]()
+        
+        # Check hybrid enlargement strategy
+        is_heatmap = pid in HEATMAPS
+        
+        if is_heatmap:
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=600, bbox_inches="tight")
+            plt.close(fig)
+            img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            return ui.HTML(f'<img src="data:image/png;base64,{img_b64}" style="width: 100%; height: auto;" />')
+        else:
+            buf = io.StringIO()
+            fig.savefig(buf, format="svg", bbox_inches="tight")
+            plt.close(fig)
+            svg_data = buf.getvalue()
+            svg_data = svg_data.replace('<svg ', '<svg style="width: 100%; height: auto;" ', 1)
+            return ui.HTML(svg_data)
+
+    # Helper function to generate download renderers dynamically
+    def make_download_handler(pid, fmt, dpi_val=None):
+        meta = plot_metadata[pid]
+        base_name = meta["filename"]
+        ext = "eps" if fmt == "eps" else ("svg" if fmt == "svg" else ("pdf" if fmt == "pdf" else "png"))
+        
+        if dpi_val:
+            fname = f"{base_name}_{dpi_val}dpi.{ext}"
+        else:
+            fname = f"{base_name}.{ext}"
+            
+        @render.download(filename=fname)
+        def download_fn():
+            if meta["gated"] and not _cohort_confirmed():
+                yield b""
+                return
+            fig = plot_registry[pid]()
+            buf = io.BytesIO()
+            if fmt == "eps":
+                fig.savefig(buf, format="eps", bbox_inches="tight")
+            elif fmt == "pdf":
+                fig.savefig(buf, format="pdf", bbox_inches="tight")
+            elif fmt == "svg":
+                fig.savefig(buf, format="svg", bbox_inches="tight")
+            else:
+                fig.savefig(buf, format="png", dpi=dpi_val, bbox_inches="tight")
+            plt.close(fig)
+            yield buf.getvalue()
+            
+        return download_fn
+
+    # Helper function to generate toolbar renderers dynamically
+    def make_toolbar_renderer(pid):
+        @render.ui
+        def toolbar_fn():
+            meta = plot_metadata[pid]
+            is_gated = meta["gated"]
+            if is_gated and not _cohort_confirmed():
+                return ui.button(
+                    "Export (Requires Cohort Confirmation)",
+                    class_="btn btn-sm btn-outline-secondary disabled w-100",
+                    type="button",
+                    disabled=True
+                )
+            else:
+                # Flat Export dropdown menu
+                return ui.div(
+                    ui.div(
+                        ui.tags.button(
+                            "Export ▾",
+                            class_="btn btn-sm btn-outline-secondary dropdown-toggle",
+                            type="button",
+                            data_bs_toggle="dropdown",
+                            aria_expanded="false"
+                        ),
+                        ui.tags.ul(
+                            ui.tags.li(
+                                ui.tags.a(
+                                    "Enlarge Plot",
+                                    class_="dropdown-item",
+                                    href="#",
+                                    onclick=f"Shiny.setInputValue('enlarge_plot_id', '{pid}', {{priority: 'event'}}); return false;"
+                                )
+                            ),
+                            ui.tags.li(ui.tags.hr(class_="dropdown-divider")),
+                            ui.tags.li(ui.download_link(f"dl_{pid}_png300", "Download PNG (300 DPI)", class_="dropdown-item")),
+                            ui.tags.li(ui.download_link(f"dl_{pid}_png600", "Download PNG (600 DPI)", class_="dropdown-item")),
+                            ui.tags.li(ui.download_link(f"dl_{pid}_pdf", "Download PDF (Vector)", class_="dropdown-item")),
+                            ui.tags.li(ui.download_link(f"dl_{pid}_svg", "Download SVG (Vector)", class_="dropdown-item")),
+                            ui.tags.li(ui.download_link(f"dl_{pid}_eps", "Download EPS (Vector - No Transparency)", class_="dropdown-item")),
+                            class_="dropdown-menu dropdown-menu-end"
+                        ),
+                        class_="dropdown"
+                    ),
+                    class_="plot-toolbar-container"
+                )
+        return toolbar_fn
+
+    # Loop to register all toolbar UI outputs and download handlers
+    for plot_id in plot_registry.keys():
+        output(make_toolbar_renderer(plot_id), id=f"tb_{plot_id}")
+        output(make_download_handler(plot_id, "png300", 300), id=f"dl_{plot_id}_png300")
+        output(make_download_handler(plot_id, "png600", 600), id=f"dl_{plot_id}_png600")
+        output(make_download_handler(plot_id, "pdf"), id=f"dl_{plot_id}_pdf")
+        output(make_download_handler(plot_id, "svg"), id=f"dl_{plot_id}_svg")
+        output(make_download_handler(plot_id, "eps"), id=f"dl_{plot_id}_eps")
+
+    # Helper function to generate tab bulk ZIP downloads
+    def make_zip_handler(tab_name, pids):
+        import zipfile
+        @render.download(filename=f"lipidomics_{tab_name}_plots.zip")
+        def zip_fn():
+            fmt = getattr(input, f"bulk_fmt_{tab_name}")()
+            ext = "eps" if fmt == "eps" else ("svg" if fmt == "svg" else ("pdf" if fmt == "pdf" else "png"))
+            
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                for pid in pids:
+                    meta = plot_metadata[pid]
+                    if meta["gated"] and not _cohort_confirmed():
+                        continue
+                        
+                    fig = plot_registry[pid]()
+                    img_buf = io.BytesIO()
+                    if fmt == "png300":
+                        fig.savefig(img_buf, format="png", dpi=300, bbox_inches="tight")
+                    elif fmt == "png600":
+                        fig.savefig(img_buf, format="png", dpi=600, bbox_inches="tight")
+                    elif fmt == "pdf":
+                        fig.savefig(img_buf, format="pdf", bbox_inches="tight")
+                    elif fmt == "svg":
+                        fig.savefig(img_buf, format="svg", bbox_inches="tight")
+                    elif fmt == "eps":
+                        fig.savefig(img_buf, format="eps", bbox_inches="tight")
+                    plt.close(fig)
+                    
+                    zip_file.writestr(f"{meta['filename']}.{ext}", img_buf.getvalue())
+                    
+            yield zip_buffer.getvalue()
+        return zip_fn
+
+    # Register ZIP downloads for all 6 tabs
+    tabs_plots = {
+        "pca": ["plt_pca_var", "plt_pca_2d", "plt_pca_3d", "plt_pca_ellipse"],
+        "cl": ["plt_cl_kde", "plt_cl_zscore", "plt_cl_corr", "plt_cl_prop", "plt_cl_fc", "plt_cl_gauss", "plt_odd_chain", "plt_odd_cl_kde", "plt_cl_ge50", "plt_cl_le30", "plt_cl_le20"],
+        "us": ["plt_us_kde", "plt_us_zscore", "plt_us_corr", "plt_us_prop", "plt_us_fc", "plt_us_sat", "plt_us_mono", "plt_us_poly"],
+        "hg": ["plt_hg_donut", "plt_hg_zscore", "plt_hg_corr", "plt_hg_fc", "plt_hg_prop", "plt_hg_bar"],
+        "lc": ["plt_lc_pie", "plt_lc_zscore", "plt_lc_prop", "plt_lc_fc"],
+        "sg": ["plt_sg_madag_prop", "plt_sg_madag_fc", "plt_sg_madag_z", "plt_sg_sph_prop", "plt_sg_sph_fc", "plt_sg_sph_z"]
+    }
+    
+    for tname, pids in tabs_plots.items():
+        output(make_zip_handler(tname, pids), id=f"dl_zip_{tname}")
 
 
 # ---------------------------------------------------------------------------
