@@ -1578,73 +1578,37 @@ def server(input: Inputs, output: Outputs, session: Session):
         "plt_cl_zscore": lambda: plot_zscore_heatmap(cl_data().get('cohort_z'), 'Chain Length Z-scores') if cl_data() else _empty_plot(),
         "plt_cl_corr": lambda: plot_correlation_heatmap(cl_data().get('cohort_raw'), 'Correlation — Chain Lengths') if cl_data() else _empty_plot(),
         "plt_cl_prop": lambda: plot_heatmap_general(cl_data().get('cohort_prop'), 'Chain Length Proportions', cmap='YlOrRd') if cl_data() else _empty_plot(),
-        "plt_cl_fc": lambda: plot_fold_change_heatmap(
-            fold_change(df_meta(), df_p(), "Acyl Chain Length", input.cl_ctrl()),
-            f"Chain Length log FC vs {input.cl_ctrl()}"
-        ) if (not df_meta().empty and not df_p().empty and input.cl_ctrl()) else _empty_plot("Select a control cohort"),
+        "plt_cl_fc": lambda: plot_fold_change_heatmap(cl_fc_data(), f"Chain Length log FC vs {input.cl_ctrl()}") if cl_fc_data() else _empty_plot(),
         "plt_cl_gauss": lambda: plot_cl_gaussian_fit(cl_data().get('long')) if cl_data() else _empty_plot(),
         "plt_odd_chain": lambda: plot_odd_chain_bar(odd_chain_fraction(df_meta(), df_cohort())) if not df_cohort().empty else _empty_plot(),
         "plt_odd_cl_kde": lambda: plot_odd_chain_kde(df_meta(), df_p()) if not df_p().empty else _empty_plot(),
-        "plt_cl_ge50": lambda: plot_heatmap_general(
-            subset_headgroup_by_chain(df_meta(), df_cohort(), lambda x: x >= 50),
-            'Head Groups — Chain Length ≥ 50', cmap='YlOrRd'
-        ) if not df_cohort().empty else _empty_plot(),
-        "plt_cl_le30": lambda: plot_heatmap_general(
-            subset_headgroup_by_chain(df_meta(), df_cohort(), lambda x: x <= 30),
-            'Head Groups — Chain Length ≤ 30', cmap='YlOrRd'
-        ) if not df_cohort().empty else _empty_plot(),
-        "plt_cl_le20": lambda: plot_heatmap_general(
-            subset_headgroup_by_chain(df_meta(), df_cohort(), lambda x: x <= 20),
-            'Head Groups — Chain Length ≤ 20', cmap='YlOrRd'
-        ) if not df_cohort().empty else _empty_plot(),
+        "plt_cl_ge50": lambda: plot_heatmap_general(cl_ge50_data(), 'Head Groups — Chain Length ≥ 50', cmap='YlOrRd') if cl_ge50_data() is not None else _empty_plot(),
+        "plt_cl_le30": lambda: plot_heatmap_general(cl_le30_data(), 'Head Groups — Chain Length ≤ 30', cmap='YlOrRd') if cl_le30_data() is not None else _empty_plot(),
+        "plt_cl_le20": lambda: plot_heatmap_general(cl_le20_data(), 'Head Groups — Chain Length ≤ 20', cmap='YlOrRd') if cl_le20_data() is not None else _empty_plot(),
 
         # Unsaturation Tab
         "plt_us_kde": lambda: plot_kde_histogram(us_data()['long'], 'Unsaturation', 'Mutation', 'Unsaturation Distribution', 'Unsaturation (# db)') if us_data() else _empty_plot(),
         "plt_us_zscore": lambda: plot_zscore_heatmap(us_data().get('cohort_z'), 'Unsaturation Z-scores') if us_data() else _empty_plot(),
         "plt_us_corr": lambda: plot_correlation_heatmap(us_data().get('cohort_raw'), 'Correlation — Unsaturation Levels') if us_data() else _empty_plot(),
         "plt_us_prop": lambda: plot_heatmap_general(us_data().get('cohort_prop'), 'Unsaturation Proportions', cmap='YlOrRd') if us_data() else _empty_plot(),
-        "plt_us_fc": lambda: plot_fold_change_heatmap(
-            fold_change(df_meta(), df_p(), "Unsaturation", input.us_ctrl()),
-            f"Unsaturation log FC vs {input.us_ctrl()}"
-        ) if (not df_meta().empty and not df_p().empty and input.us_ctrl()) else _empty_plot("Select a control cohort"),
-        "plt_us_sat": lambda: plot_heatmap_general(
-            subset_headgroup_by_unsat(df_meta(), df_cohort(), lambda x: x == 0),
-            'Head Groups — Saturated (0 db)', cmap='YlOrRd'
-        ) if not df_cohort().empty else _empty_plot(),
-        "plt_us_mono": lambda: plot_heatmap_general(
-            subset_headgroup_by_unsat(df_meta(), df_cohort(), lambda x: x.isin([1, 2])),
-            'Head Groups — Monounsaturated (1–2 db)', cmap='YlOrRd'
-        ) if not df_cohort().empty else _empty_plot(),
-        "plt_us_poly": lambda: plot_heatmap_general(
-            subset_headgroup_by_unsat(df_meta(), df_cohort(), lambda x: x >= 3),
-            'Head Groups — Polyunsaturated (≥3 db)', cmap='YlOrRd'
-        ) if not df_cohort().empty else _empty_plot(),
+        "plt_us_fc": lambda: plot_fold_change_heatmap(us_fc_data(), f"Unsaturation log FC vs {input.us_ctrl()}") if us_fc_data() else _empty_plot(),
+        "plt_us_sat": lambda: plot_heatmap_general(us_sat_data(), 'Head Groups — Saturated (0 db)', cmap='YlOrRd') if us_sat_data() is not None else _empty_plot(),
+        "plt_us_mono": lambda: plot_heatmap_general(us_mono_data(), 'Head Groups — Monounsaturated (1–2 db)', cmap='YlOrRd') if us_mono_data() is not None else _empty_plot(),
+        "plt_us_poly": lambda: plot_heatmap_general(us_poly_data(), 'Head Groups — Polyunsaturated (≥3 db)', cmap='YlOrRd') if us_poly_data() is not None else _empty_plot(),
 
         # Head Group Tab
-        "plt_hg_donut": lambda: plot_donut_chart(
-            hg_data()["cohort_prop"].mean(axis=1).sort_values(ascending=False),
-            'Average Head Group Distribution'
-        ) if hg_data() else _empty_plot(),
+        "plt_hg_donut": lambda: plot_donut_chart(hg_mean_prop(), 'Average Head Group Distribution') if hg_mean_prop() is not None else _empty_plot(),
         "plt_hg_zscore": lambda: plot_zscore_heatmap(hg_data().get('cohort_z'), 'Head Group Z-scores') if hg_data() else _empty_plot(),
         "plt_hg_corr": lambda: plot_correlation_heatmap(hg_data().get('cohort_raw'), 'Correlation — Head Groups') if hg_data() else _empty_plot(),
-        "plt_hg_fc": lambda: plot_fold_change_heatmap(
-            fold_change(df_meta(), df_p(), "Head Group 2", input.hg_ctrl()),
-            f"Head Group log FC vs {input.hg_ctrl()}"
-        ) if (not df_meta().empty and not df_p().empty and input.hg_ctrl()) else _empty_plot("Select a control cohort"),
+        "plt_hg_fc": lambda: plot_fold_change_heatmap(hg_fc_data(), f"Head Group log FC vs {input.hg_ctrl()}") if hg_fc_data() else _empty_plot(),
         "plt_hg_prop": lambda: plot_heatmap_general(hg_data().get('cohort_prop'), 'Head Group Proportions', cmap='YlOrRd') if hg_data() else _empty_plot(),
         "plt_hg_bar": lambda: plot_hg_abundance_bar(hg_data(), input.hg_bar_group()),
 
         # Lipid Class Tab
-        "plt_lc_pie": lambda: plot_pie_chart(
-            lc_data()["prop"].mean(axis=1).sort_values(ascending=False),
-            'Lipid Class Distribution'
-        ) if lc_data() else _empty_plot(),
+        "plt_lc_pie": lambda: plot_pie_chart(lc_mean_prop(), 'Lipid Class Distribution') if lc_mean_prop() is not None else _empty_plot(),
         "plt_lc_zscore": lambda: plot_zscore_heatmap(lc_data().get('zscore'), 'Lipid Class Z-scores') if lc_data() else _empty_plot(),
         "plt_lc_prop": lambda: plot_heatmap_general(lc_data().get('prop'), 'Lipid Class Normalised Proportions', cmap='YlOrRd') if lc_data() else _empty_plot(),
-        "plt_lc_fc": lambda: plot_fold_change_heatmap(
-            fold_change(df_meta(), df_p(), "Head Group", input.lc_ctrl()),
-            f"Lipid Class log FC vs {input.lc_ctrl()}"
-        ) if (not df_meta().empty and not df_p().empty and input.lc_ctrl()) else _empty_plot("Select a control cohort"),
+        "plt_lc_fc": lambda: plot_fold_change_heatmap(lc_fc_data(), f"Lipid Class log FC vs {input.lc_ctrl()}") if lc_fc_data() else _empty_plot(),
 
         # Sub-groups Tab
         "plt_sg_madag_prop": lambda: plot_heatmap_general(sg_madag_result().get('prop'), 'MADAG — Proportions', cmap='YlOrRd') if sg_madag_result() else _empty_plot(),
