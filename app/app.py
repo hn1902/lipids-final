@@ -834,27 +834,20 @@ def server(input: Inputs, output: Outputs, session: Session):
         _cohort_confirmed.set(False)
         _cohort_confidence.set(conf)
 
-    @reactive.effect
-    def _invalidate_on_edit():
-        try:
-            _ = tbl_cohort_mapping.data_view()
-            _cohort_confirmed.set(False)
-        except AttributeError:
-            pass
-
     @reactive.calc
     def finalized_cohort_mapping():
+        from shiny.types import SilentException, SilentCancelOutputException
         try:
             edited = tbl_cohort_mapping.data_view()
-            if not edited.empty:
+            if edited is not None and not edited.empty:
                 # Validate that the edited dataframe actually has our expected columns
                 if "Sample" not in edited.columns or "Cohort" not in edited.columns:
                     print(f"DEBUG: edited dataframe has missing columns: {edited.columns.tolist()}. Falling back.")
                     return _cohort_mapping_df()
                 return edited
-            return _cohort_mapping_df()
-        except AttributeError:
-            return _cohort_mapping_df()
+        except (AttributeError, SilentException, SilentCancelOutputException):
+            pass
+        return _cohort_mapping_df()
 
     @reactive.calc
     def df_exps():
@@ -987,17 +980,35 @@ def server(input: Inputs, output: Outputs, session: Session):
     @reactive.calc
     def us_data():
         if not _cohort_confirmed(): return {}
-        return unsaturation_analysis(df_meta(), df_p(), df_cohort())
+        try:
+            return unsaturation_analysis(df_meta(), df_p(), df_cohort())
+        except Exception as e:
+            import traceback, sys
+            print(f"ERROR IN us_data: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return {}
 
     @reactive.calc
     def hg_data():
         if not _cohort_confirmed(): return {}
-        return headgroup_analysis(df_meta(), df_p(), df_cohort())
+        try:
+            return headgroup_analysis(df_meta(), df_p(), df_cohort())
+        except Exception as e:
+            import traceback, sys
+            print(f"ERROR IN hg_data: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return {}
 
     @reactive.calc
     def lc_data():
         if not _cohort_confirmed(): return {}
-        return lipid_class_analysis(df_meta(), df_cohort())
+        try:
+            return lipid_class_analysis(df_meta(), df_cohort())
+        except Exception as e:
+            import traceback, sys
+            print(f"ERROR IN lc_data: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return {}
 
     @reactive.calc
     def stat_result():
@@ -1189,35 +1200,14 @@ def server(input: Inputs, output: Outputs, session: Session):
     #  TAB 2 — PCA                                                         #
     # ------------------------------------------------------------------ #
 
-    @render.plot
-    def plt_pca_var():
-        _, var, _ = pca_result()
-        return plot_pca_variance(var)
 
-    @render.plot
-    def plt_pca_2d():
-        df_pca, _, _ = pca_result()
-        return plot_pca_2d(df_pca)
 
-    @render.plot
-    def plt_pca_3d():
-        df_pca, _, _ = pca_result()
-        return plot_pca_3d(df_pca)
 
     @render.download(filename="pca_scores.csv")
     def dl_pca_scores():
         df_pca, _, _ = pca_result()
         yield df_pca.to_csv() if not df_pca.empty else ""
 
-    @render.plot
-    def plt_pca_ellipse():
-        if not _cohort_confirmed():
-            fig, ax = plt.subplots(figsize=(6, 4))
-            ax.text(0.5, 0.5, "Replicate structure unconfirmed.\nEllipse statistics disabled until cohort confirmation.",
-                    horizontalalignment='center', verticalalignment='center', fontsize=12)
-            ax.axis('off')
-            return fig
-        return plot_pca_2d_replicates(df_p(), df_exps())
 
     @render.download(filename="pca_variance.csv")
     def dl_pca_variance():
@@ -1240,53 +1230,13 @@ def server(input: Inputs, output: Outputs, session: Session):
 
 
 
-    @render.plot
-    def plt_cl_kde():
-        d = cl_data()
-        if not d:
-            return _empty_plot()
-        return plot_kde_histogram(d["long"], "Acyl Chain Length", "Mutation",
-                                  "Chain Length Distribution", "Acyl Chain Length")
 
-    @render.plot
-    def plt_cl_zscore():
-        d = cl_data()
-        return plot_zscore_heatmap(d.get("cohort_z") if d else None,
-                                   "Chain Length Z-scores")
 
-    @render.plot
-    def plt_cl_corr():
-        d = cl_data()
-        return plot_correlation_heatmap(d.get("cohort_raw") if d else None,
-                                        "Correlation — Chain Lengths")
 
-    @render.plot
-    def plt_cl_prop():
-        d = cl_data()
-        return plot_heatmap_general(d.get("cohort_prop") if d else None,
-                                    "Chain Length Proportions", cmap="YlOrRd")
 
-    @render.plot
-    def plt_cl_fc():
-        ctrl = input.cl_ctrl()
-        dm = df_meta(); dp = df_p()
-        if dm.empty or dp.empty or not ctrl:
-            return _empty_plot("Select a control cohort")
-        df_log = fold_change(dm, dp, "Acyl Chain Length", ctrl)
-        return plot_fold_change_heatmap(df_log, f"Chain Length log FC vs {ctrl}")
 
-    @render.plot
-    def plt_cl_gauss():
-        d = cl_data()
-        return plot_cl_gaussian_fit(d.get("long") if d else None)
 
-    @render.plot
-    def plt_odd_chain():
-        return plot_odd_chain_bar(odd_chain_fraction(df_meta(), df_cohort()))
 
-    @render.plot
-    def plt_odd_cl_kde():
-        return plot_odd_chain_kde(df_meta(), df_p())
 
     @render.data_frame
     def tbl_cl_outliers():
@@ -1296,158 +1246,42 @@ def server(input: Inputs, output: Outputs, session: Session):
             return render.DataGrid(pd.DataFrame({"Info": ["No data yet."]}))
         return render.DataGrid(out, width="100%")
 
-    @render.plot
-    def plt_cl_ge50():
-        hg = subset_headgroup_by_chain(df_meta(), df_cohort(), lambda x: x >= 50)
-        return plot_heatmap_general(hg, "Head Groups — Chain Length ≥ 50",
-                                    cmap="YlOrRd")
 
-    @render.plot
-    def plt_cl_le30():
-        hg = subset_headgroup_by_chain(df_meta(), df_cohort(), lambda x: x <= 30)
-        return plot_heatmap_general(hg, "Head Groups — Chain Length ≤ 30",
-                                    cmap="YlOrRd")
 
-    @render.plot
-    def plt_cl_le20():
-        hg = subset_headgroup_by_chain(df_meta(), df_cohort(), lambda x: x <= 20)
-        return plot_heatmap_general(hg, "Head Groups — Chain Length ≤ 20",
-                                    cmap="YlOrRd")
+
 
     # ------------------------------------------------------------------ #
     #  TAB 4 — UNSATURATION                                                #
     # ------------------------------------------------------------------ #
 
-    @render.plot
-    def plt_us_kde():
-        d = us_data()
-        if not d:
-            return _empty_plot()
-        return plot_kde_histogram(d["long"], "Unsaturation", "Mutation",
-                                  "Unsaturation Distribution", "Unsaturation (# db)")
 
-    @render.plot
-    def plt_us_zscore():
-        d = us_data()
-        return plot_zscore_heatmap(d.get("cohort_z") if d else None,
-                                   "Unsaturation Z-scores")
 
-    @render.plot
-    def plt_us_corr():
-        d = us_data()
-        return plot_correlation_heatmap(d.get("cohort_raw") if d else None,
-                                        "Correlation — Unsaturation Levels")
 
-    @render.plot
-    def plt_us_prop():
-        d = us_data()
-        return plot_heatmap_general(d.get("cohort_prop") if d else None,
-                                    "Unsaturation Proportions", cmap="YlOrRd")
 
-    @render.plot
-    def plt_us_fc():
-        ctrl = input.us_ctrl()
-        dm = df_meta(); dp = df_p()
-        if dm.empty or dp.empty or not ctrl:
-            return _empty_plot("Select a control cohort")
-        df_log = fold_change(dm, dp, "Unsaturation", ctrl)
-        return plot_fold_change_heatmap(df_log, f"Unsaturation log FC vs {ctrl}")
 
-    @render.plot
-    def plt_us_sat():
-        hg = subset_headgroup_by_unsat(df_meta(), df_cohort(), lambda x: x == 0)
-        return plot_heatmap_general(hg, "Head Groups — Saturated (0 db)",
-                                    cmap="YlOrRd")
 
-    @render.plot
-    def plt_us_mono():
-        hg = subset_headgroup_by_unsat(df_meta(), df_cohort(),
-                                       lambda x: x.isin([1, 2]))
-        return plot_heatmap_general(hg, "Head Groups — Monounsaturated (1–2 db)",
-                                    cmap="YlOrRd")
 
-    @render.plot
-    def plt_us_poly():
-        hg = subset_headgroup_by_unsat(df_meta(), df_cohort(), lambda x: x >= 3)
-        return plot_heatmap_general(hg, "Head Groups — Polyunsaturated (≥3 db)",
-                                    cmap="YlOrRd")
+
 
     # ------------------------------------------------------------------ #
     #  TAB 5 — HEAD GROUP                                                  #
     # ------------------------------------------------------------------ #
 
-    @render.plot
-    def plt_hg_donut():
-        d = hg_data()
-        if not d:
-            return _empty_plot()
-        mean_prop = d["cohort_prop"].mean(axis=1).sort_values(ascending=False)
-        return plot_donut_chart(mean_prop, "Average Head Group Distribution")
 
-    @render.plot
-    def plt_hg_zscore():
-        d = hg_data()
-        return plot_zscore_heatmap(d.get("cohort_z") if d else None,
-                                   "Head Group Z-scores")
 
-    @render.plot
-    def plt_hg_corr():
-        d = hg_data()
-        return plot_correlation_heatmap(d.get("cohort_raw") if d else None,
-                                        "Correlation — Head Groups")
 
-    @render.plot
-    def plt_hg_fc():
-        ctrl = input.hg_ctrl()
-        dm = df_meta(); dp = df_p()
-        if dm.empty or dp.empty or not ctrl:
-            return _empty_plot("Select a control cohort")
-        df_log = fold_change(dm, dp, "Head Group 2", ctrl)
-        return plot_fold_change_heatmap(df_log, f"Head Group log FC vs {ctrl}")
 
-    @render.plot
-    def plt_hg_prop():
-        d = hg_data()
-        return plot_heatmap_general(d.get("cohort_prop") if d else None,
-                                    "Head Group Proportions", cmap="YlOrRd")
 
-    @render.plot
-    def plt_hg_bar():
-        return plot_hg_abundance_bar(hg_data(), input.hg_bar_group())
+
 
     # ------------------------------------------------------------------ #
     #  TAB 6 — LIPID CLASS                                                 #
     # ------------------------------------------------------------------ #
 
-    @render.plot
-    def plt_lc_pie():
-        d = lc_data()
-        if not d:
-            return _empty_plot()
-        mean_prop = d["prop"].mean(axis=1).sort_values(ascending=False)
-        return plot_pie_chart(mean_prop, "Lipid Class Distribution")
 
-    @render.plot
-    def plt_lc_zscore():
-        d = lc_data()
-        return plot_zscore_heatmap(d.get("zscore") if d else None,
-                                   "Lipid Class Z-scores")
 
-    @render.plot
-    def plt_lc_prop():
-        d = lc_data()
-        return plot_heatmap_general(d.get("prop") if d else None,
-                                    "Lipid Class Normalised Proportions",
-                                    cmap="YlOrRd")
 
-    @render.plot
-    def plt_lc_fc():
-        ctrl = input.lc_ctrl()
-        dm = df_meta(); dp = df_p()
-        if dm.empty or dp.empty or not ctrl:
-            return _empty_plot("Select a control cohort")
-        df_log = fold_change(dm, dp, "Head Group", ctrl)
-        return plot_fold_change_heatmap(df_log, f"Lipid Class log FC vs {ctrl}")
+
 
     # ------------------------------------------------------------------ #
     #  TAB 7 — STATISTICS                                                  #
@@ -1507,29 +1341,12 @@ def server(input: Inputs, output: Outputs, session: Session):
             return plot_fold_change_heatmap(df, title)
         return plot_zscore_heatmap(df, title)
 
-    @render.plot
-    def plt_sg_madag_prop():
-        return _sg_plot(sg_madag_result, "prop", "MADAG — Proportions")
 
-    @render.plot
-    def plt_sg_madag_fc():
-        return _sg_plot(sg_madag_result, "logfc", "MADAG — Log Fold Change")
 
-    @render.plot
-    def plt_sg_madag_z():
-        return _sg_plot(sg_madag_result, "zscore", "MADAG — Z-score")
 
-    @render.plot
-    def plt_sg_sph_prop():
-        return _sg_plot(sg_sph_result, "prop", "Sphingolipids — Proportions")
 
-    @render.plot
-    def plt_sg_sph_fc():
-        return _sg_plot(sg_sph_result, "logfc", "Sphingolipids — Log Fold Change")
 
-    @render.plot
-    def plt_sg_sph_z():
-        return _sg_plot(sg_sph_result, "zscore", "Sphingolipids — Z-score")
+
 
     # ------------------------------------------------------------------ #
     #  TAB 9 — INSIGHTS                                                    #
@@ -1566,6 +1383,71 @@ def server(input: Inputs, output: Outputs, session: Session):
         yield (spec_df.to_csv(index=False)
                if spec_df is not None and not spec_df.empty else "")
 
+    def _safe_input(name, default=None):
+        try:
+            val = getattr(input, name)()
+            return val if val else default
+        except Exception:
+            return default
+
+    def _cl_fc():
+        ctrl = _safe_input("cl_ctrl")
+        dm = df_meta(); dp = df_p()
+        if dm.empty or dp.empty or not ctrl: return _empty_plot("Select a control cohort")
+        return plot_fold_change_heatmap(fold_change(dm, dp, "Acyl Chain Length", ctrl), f"Chain Length log FC vs {ctrl}")
+
+    def _cl_ge50():
+        hg = subset_headgroup_by_chain(df_meta(), df_cohort(), lambda x: x >= 50)
+        return plot_heatmap_general(hg, 'Head Groups — Chain Length ≥ 50', cmap='YlOrRd')
+
+    def _cl_le30():
+        hg = subset_headgroup_by_chain(df_meta(), df_cohort(), lambda x: x <= 30)
+        return plot_heatmap_general(hg, 'Head Groups — Chain Length ≤ 30', cmap='YlOrRd')
+
+    def _cl_le20():
+        hg = subset_headgroup_by_chain(df_meta(), df_cohort(), lambda x: x <= 20)
+        return plot_heatmap_general(hg, 'Head Groups — Chain Length ≤ 20', cmap='YlOrRd')
+
+    def _us_fc():
+        ctrl = _safe_input("us_ctrl")
+        dm = df_meta(); dp = df_p()
+        if dm.empty or dp.empty or not ctrl: return _empty_plot("Select a control cohort")
+        return plot_fold_change_heatmap(fold_change(dm, dp, "Unsaturation", ctrl), f"Unsaturation log FC vs {ctrl}")
+
+    def _us_sat():
+        hg = subset_headgroup_by_unsat(df_meta(), df_cohort(), lambda x: x == 0)
+        return plot_heatmap_general(hg, 'Head Groups — Saturated (0 db)', cmap='YlOrRd')
+
+    def _us_mono():
+        hg = subset_headgroup_by_unsat(df_meta(), df_cohort(), lambda x: x.isin([1, 2]))
+        return plot_heatmap_general(hg, 'Head Groups — Monounsaturated (1–2 db)', cmap='YlOrRd')
+
+    def _us_poly():
+        hg = subset_headgroup_by_unsat(df_meta(), df_cohort(), lambda x: x >= 3)
+        return plot_heatmap_general(hg, 'Head Groups — Polyunsaturated (≥3 db)', cmap='YlOrRd')
+
+    def _hg_donut():
+        d = hg_data()
+        if not d: return _empty_plot()
+        return plot_donut_chart(d["cohort_prop"].mean(axis=1).sort_values(ascending=False), 'Average Head Group Distribution')
+
+    def _hg_fc():
+        ctrl = _safe_input("hg_ctrl")
+        dm = df_meta(); dp = df_p()
+        if dm.empty or dp.empty or not ctrl: return _empty_plot("Select a control cohort")
+        return plot_fold_change_heatmap(fold_change(dm, dp, "Head Group 2", ctrl), f"Head Group log FC vs {ctrl}")
+
+    def _lc_pie():
+        d = lc_data()
+        if not d: return _empty_plot()
+        return plot_pie_chart(d["prop"].mean(axis=1).sort_values(ascending=False), 'Lipid Class Distribution')
+
+    def _lc_fc():
+        ctrl = _safe_input("lc_ctrl")
+        dm = df_meta(); dp = df_p()
+        if dm.empty or dp.empty or not ctrl: return _empty_plot("Select a control cohort")
+        return plot_fold_change_heatmap(fold_change(dm, dp, "Head Group", ctrl), f"Lipid Class log FC vs {ctrl}")
+
     plot_registry = {
         # PCA Tab
         "plt_pca_var": lambda: plot_pca_variance(pca_result()[1]),
@@ -1578,37 +1460,37 @@ def server(input: Inputs, output: Outputs, session: Session):
         "plt_cl_zscore": lambda: plot_zscore_heatmap(cl_data().get('cohort_z'), 'Chain Length Z-scores') if cl_data() else _empty_plot(),
         "plt_cl_corr": lambda: plot_correlation_heatmap(cl_data().get('cohort_raw'), 'Correlation — Chain Lengths') if cl_data() else _empty_plot(),
         "plt_cl_prop": lambda: plot_heatmap_general(cl_data().get('cohort_prop'), 'Chain Length Proportions', cmap='YlOrRd') if cl_data() else _empty_plot(),
-        "plt_cl_fc": lambda: plot_fold_change_heatmap(cl_fc_data(), f"Chain Length log FC vs {input.cl_ctrl()}") if cl_fc_data() else _empty_plot(),
+        "plt_cl_fc": _cl_fc,
         "plt_cl_gauss": lambda: plot_cl_gaussian_fit(cl_data().get('long')) if cl_data() else _empty_plot(),
         "plt_odd_chain": lambda: plot_odd_chain_bar(odd_chain_fraction(df_meta(), df_cohort())) if not df_cohort().empty else _empty_plot(),
         "plt_odd_cl_kde": lambda: plot_odd_chain_kde(df_meta(), df_p()) if not df_p().empty else _empty_plot(),
-        "plt_cl_ge50": lambda: plot_heatmap_general(cl_ge50_data(), 'Head Groups — Chain Length ≥ 50', cmap='YlOrRd') if cl_ge50_data() is not None else _empty_plot(),
-        "plt_cl_le30": lambda: plot_heatmap_general(cl_le30_data(), 'Head Groups — Chain Length ≤ 30', cmap='YlOrRd') if cl_le30_data() is not None else _empty_plot(),
-        "plt_cl_le20": lambda: plot_heatmap_general(cl_le20_data(), 'Head Groups — Chain Length ≤ 20', cmap='YlOrRd') if cl_le20_data() is not None else _empty_plot(),
+        "plt_cl_ge50": _cl_ge50,
+        "plt_cl_le30": _cl_le30,
+        "plt_cl_le20": _cl_le20,
 
         # Unsaturation Tab
         "plt_us_kde": lambda: plot_kde_histogram(us_data()['long'], 'Unsaturation', 'Mutation', 'Unsaturation Distribution', 'Unsaturation (# db)') if us_data() else _empty_plot(),
         "plt_us_zscore": lambda: plot_zscore_heatmap(us_data().get('cohort_z'), 'Unsaturation Z-scores') if us_data() else _empty_plot(),
         "plt_us_corr": lambda: plot_correlation_heatmap(us_data().get('cohort_raw'), 'Correlation — Unsaturation Levels') if us_data() else _empty_plot(),
         "plt_us_prop": lambda: plot_heatmap_general(us_data().get('cohort_prop'), 'Unsaturation Proportions', cmap='YlOrRd') if us_data() else _empty_plot(),
-        "plt_us_fc": lambda: plot_fold_change_heatmap(us_fc_data(), f"Unsaturation log FC vs {input.us_ctrl()}") if us_fc_data() else _empty_plot(),
-        "plt_us_sat": lambda: plot_heatmap_general(us_sat_data(), 'Head Groups — Saturated (0 db)', cmap='YlOrRd') if us_sat_data() is not None else _empty_plot(),
-        "plt_us_mono": lambda: plot_heatmap_general(us_mono_data(), 'Head Groups — Monounsaturated (1–2 db)', cmap='YlOrRd') if us_mono_data() is not None else _empty_plot(),
-        "plt_us_poly": lambda: plot_heatmap_general(us_poly_data(), 'Head Groups — Polyunsaturated (≥3 db)', cmap='YlOrRd') if us_poly_data() is not None else _empty_plot(),
+        "plt_us_fc": _us_fc,
+        "plt_us_sat": _us_sat,
+        "plt_us_mono": _us_mono,
+        "plt_us_poly": _us_poly,
 
         # Head Group Tab
-        "plt_hg_donut": lambda: plot_donut_chart(hg_mean_prop(), 'Average Head Group Distribution') if hg_mean_prop() is not None else _empty_plot(),
+        "plt_hg_donut": _hg_donut,
         "plt_hg_zscore": lambda: plot_zscore_heatmap(hg_data().get('cohort_z'), 'Head Group Z-scores') if hg_data() else _empty_plot(),
         "plt_hg_corr": lambda: plot_correlation_heatmap(hg_data().get('cohort_raw'), 'Correlation — Head Groups') if hg_data() else _empty_plot(),
-        "plt_hg_fc": lambda: plot_fold_change_heatmap(hg_fc_data(), f"Head Group log FC vs {input.hg_ctrl()}") if hg_fc_data() else _empty_plot(),
+        "plt_hg_fc": _hg_fc,
         "plt_hg_prop": lambda: plot_heatmap_general(hg_data().get('cohort_prop'), 'Head Group Proportions', cmap='YlOrRd') if hg_data() else _empty_plot(),
-        "plt_hg_bar": lambda: plot_hg_abundance_bar(hg_data(), input.hg_bar_group()),
+        "plt_hg_bar": lambda: plot_hg_abundance_bar(hg_data(), _safe_input("hg_bar_group")),
 
         # Lipid Class Tab
-        "plt_lc_pie": lambda: plot_pie_chart(lc_mean_prop(), 'Lipid Class Distribution') if lc_mean_prop() is not None else _empty_plot(),
+        "plt_lc_pie": _lc_pie,
         "plt_lc_zscore": lambda: plot_zscore_heatmap(lc_data().get('zscore'), 'Lipid Class Z-scores') if lc_data() else _empty_plot(),
         "plt_lc_prop": lambda: plot_heatmap_general(lc_data().get('prop'), 'Lipid Class Normalised Proportions', cmap='YlOrRd') if lc_data() else _empty_plot(),
-        "plt_lc_fc": lambda: plot_fold_change_heatmap(lc_fc_data(), f"Lipid Class log FC vs {input.lc_ctrl()}") if lc_fc_data() else _empty_plot(),
+        "plt_lc_fc": _lc_fc,
 
         # Sub-groups Tab
         "plt_sg_madag_prop": lambda: plot_heatmap_general(sg_madag_result().get('prop'), 'MADAG — Proportions', cmap='YlOrRd') if sg_madag_result() else _empty_plot(),
@@ -1751,25 +1633,38 @@ def server(input: Inputs, output: Outputs, session: Session):
         else:
             fname = f"{base_name}.{ext}"
             
-        @render.download(filename=fname)
         def download_fn():
-            if meta["gated"] and not _cohort_confirmed():
-                yield b""
-                return
-            fig = plot_registry[pid]()
-            buf = io.BytesIO()
-            if fmt == "eps":
-                fig.savefig(buf, format="eps", bbox_inches="tight")
-            elif fmt == "pdf":
-                fig.savefig(buf, format="pdf", bbox_inches="tight")
-            elif fmt == "svg":
-                fig.savefig(buf, format="svg", bbox_inches="tight")
-            else:
-                fig.savefig(buf, format="png", dpi=dpi_val, bbox_inches="tight")
-            plt.close(fig)
-            yield buf.getvalue()
-            
-        return download_fn
+            import sys, traceback
+            try:
+                print(f"ENTERED DOWNLOAD: {pid} FORMAT: {fmt}", file=sys.stderr, flush=True)
+                if meta["gated"] and not _cohort_confirmed():
+                    print("COHORT NOT CONFIRMED - YIELDING EMPTY", file=sys.stderr, flush=True)
+                    yield b""
+                    return
+                print(f"CALLING REGISTRY FOR {pid}", file=sys.stderr, flush=True)
+                fig = plot_registry[pid]()
+                print("FIG GENERATED", file=sys.stderr, flush=True)
+
+                buf = io.BytesIO()
+                if fmt == "eps":
+                    fig.savefig(buf, format="eps", bbox_inches="tight")
+                elif fmt == "pdf":
+                    fig.savefig(buf, format="pdf", bbox_inches="tight")
+                elif fmt == "svg":
+                    fig.savefig(buf, format="svg", bbox_inches="tight")
+                else:
+                    fig.savefig(buf, format="png", dpi=dpi_val, bbox_inches="tight")
+                plt.close(fig)
+                print(f"BUFFER SIZE: {len(buf.getvalue())}", file=sys.stderr, flush=True)
+                yield buf.getvalue()
+            except Exception as e:
+                import sys, traceback
+                print(f"EXCEPTION IN DOWNLOAD {pid}: {e}", file=sys.stderr, flush=True)
+                traceback.print_exc(file=sys.stderr)
+                raise
+        
+        download_fn.__name__ = f"dl_{pid}_{fmt}"
+        return render.download(filename=fname)(download_fn)
 
     # Helper function to generate toolbar renderers dynamically
     def make_toolbar_renderer(pid):
@@ -1819,6 +1714,477 @@ def server(input: Inputs, output: Outputs, session: Session):
         return toolbar_fn
 
     # Loop to register all toolbar UI outputs and download handlers
+
+    # Explicit @render.plot definitions generated
+
+    @render.plot
+    def plt_pca_var():
+        if plot_metadata["plt_pca_var"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_pca_var"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_pca_var: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_pca_2d():
+        if plot_metadata["plt_pca_2d"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_pca_2d"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_pca_2d: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_pca_3d():
+        if plot_metadata["plt_pca_3d"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_pca_3d"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_pca_3d: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_pca_ellipse():
+        if plot_metadata["plt_pca_ellipse"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_pca_ellipse"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_pca_ellipse: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_cl_kde():
+        if plot_metadata["plt_cl_kde"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_cl_kde"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_cl_kde: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_cl_zscore():
+        if plot_metadata["plt_cl_zscore"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_cl_zscore"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_cl_zscore: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_cl_corr():
+        if plot_metadata["plt_cl_corr"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_cl_corr"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_cl_corr: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_cl_prop():
+        if plot_metadata["plt_cl_prop"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_cl_prop"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_cl_prop: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_cl_fc():
+        if plot_metadata["plt_cl_fc"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_cl_fc"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_cl_fc: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_cl_gauss():
+        if plot_metadata["plt_cl_gauss"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_cl_gauss"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_cl_gauss: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_odd_chain():
+        if plot_metadata["plt_odd_chain"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_odd_chain"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_odd_chain: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_odd_cl_kde():
+        if plot_metadata["plt_odd_cl_kde"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_odd_cl_kde"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_odd_cl_kde: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_cl_ge50():
+        if plot_metadata["plt_cl_ge50"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_cl_ge50"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_cl_ge50: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_cl_le30():
+        if plot_metadata["plt_cl_le30"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_cl_le30"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_cl_le30: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_cl_le20():
+        if plot_metadata["plt_cl_le20"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_cl_le20"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_cl_le20: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_us_kde():
+        if plot_metadata["plt_us_kde"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_us_kde"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_us_kde: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_us_zscore():
+        if plot_metadata["plt_us_zscore"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_us_zscore"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_us_zscore: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_us_corr():
+        if plot_metadata["plt_us_corr"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_us_corr"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_us_corr: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_us_prop():
+        if plot_metadata["plt_us_prop"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_us_prop"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_us_prop: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_us_fc():
+        if plot_metadata["plt_us_fc"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_us_fc"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_us_fc: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_us_sat():
+        if plot_metadata["plt_us_sat"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_us_sat"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_us_sat: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_us_mono():
+        if plot_metadata["plt_us_mono"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_us_mono"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_us_mono: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_us_poly():
+        if plot_metadata["plt_us_poly"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_us_poly"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_us_poly: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_hg_donut():
+        if plot_metadata["plt_hg_donut"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_hg_donut"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_hg_donut: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_hg_zscore():
+        if plot_metadata["plt_hg_zscore"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_hg_zscore"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_hg_zscore: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_hg_corr():
+        if plot_metadata["plt_hg_corr"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_hg_corr"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_hg_corr: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_hg_fc():
+        if plot_metadata["plt_hg_fc"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_hg_fc"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_hg_fc: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_hg_prop():
+        if plot_metadata["plt_hg_prop"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_hg_prop"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_hg_prop: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_hg_bar():
+        if plot_metadata["plt_hg_bar"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_hg_bar"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_hg_bar: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_lc_pie():
+        if plot_metadata["plt_lc_pie"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_lc_pie"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_lc_pie: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_lc_zscore():
+        if plot_metadata["plt_lc_zscore"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_lc_zscore"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_lc_zscore: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_lc_prop():
+        if plot_metadata["plt_lc_prop"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_lc_prop"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_lc_prop: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_lc_fc():
+        if plot_metadata["plt_lc_fc"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_lc_fc"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_lc_fc: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_sg_madag_prop():
+        if plot_metadata["plt_sg_madag_prop"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_sg_madag_prop"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_sg_madag_prop: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_sg_madag_fc():
+        if plot_metadata["plt_sg_madag_fc"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_sg_madag_fc"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_sg_madag_fc: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_sg_madag_z():
+        if plot_metadata["plt_sg_madag_z"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_sg_madag_z"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_sg_madag_z: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_sg_sph_prop():
+        if plot_metadata["plt_sg_sph_prop"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_sg_sph_prop"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_sg_sph_prop: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_sg_sph_fc():
+        if plot_metadata["plt_sg_sph_fc"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_sg_sph_fc"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_sg_sph_fc: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_sg_sph_z():
+        if plot_metadata["plt_sg_sph_z"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_sg_sph_z"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_sg_sph_z: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
     for plot_id in plot_registry.keys():
         output(make_toolbar_renderer(plot_id), id=f"tb_{plot_id}")
         output(make_download_handler(plot_id, "png300", 300), id=f"dl_{plot_id}_png300")
@@ -1830,36 +2196,55 @@ def server(input: Inputs, output: Outputs, session: Session):
     # Helper function to generate tab bulk ZIP downloads
     def make_zip_handler(tab_name, pids):
         import zipfile
-        @render.download(filename=f"lipidomics_{tab_name}_plots.zip")
         def zip_fn():
-            fmt = getattr(input, f"bulk_fmt_{tab_name}")()
-            ext = "eps" if fmt == "eps" else ("svg" if fmt == "svg" else ("pdf" if fmt == "pdf" else "png"))
-            
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                for pid in pids:
-                    meta = plot_metadata[pid]
-                    if meta["gated"] and not _cohort_confirmed():
-                        continue
-                        
-                    fig = plot_registry[pid]()
-                    img_buf = io.BytesIO()
-                    if fmt == "png300":
-                        fig.savefig(img_buf, format="png", dpi=300, bbox_inches="tight")
-                    elif fmt == "png600":
-                        fig.savefig(img_buf, format="png", dpi=600, bbox_inches="tight")
-                    elif fmt == "pdf":
-                        fig.savefig(img_buf, format="pdf", bbox_inches="tight")
-                    elif fmt == "svg":
-                        fig.savefig(img_buf, format="svg", bbox_inches="tight")
-                    elif fmt == "eps":
-                        fig.savefig(img_buf, format="eps", bbox_inches="tight")
-                    plt.close(fig)
-                    
-                    zip_file.writestr(f"{meta['filename']}.{ext}", img_buf.getvalue())
-                    
-            yield zip_buffer.getvalue()
-        return zip_fn
+            import sys, traceback
+            try:
+                fmt = getattr(input, f"bulk_fmt_{tab_name}")()
+                ext = "eps" if fmt == "eps" else ("svg" if fmt == "svg" else ("pdf" if fmt == "pdf" else "png"))
+                
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                    for pid in pids:
+                        meta = plot_metadata[pid]
+                        if meta["gated"] and not _cohort_confirmed():
+                            continue
+                            
+                        try:
+                            fig = plot_registry[pid]()
+                            
+                            # If plot_registry returns None due to another error internally
+                            if fig is None:
+                                zip_file.writestr(f"ERROR_{pid}.txt", "Plot returned None.")
+                                continue
+                                
+                            img_buf = io.BytesIO()
+                            if fmt == "png300":
+                                fig.savefig(img_buf, format="png", dpi=300, bbox_inches="tight")
+                            elif fmt == "png600":
+                                fig.savefig(img_buf, format="png", dpi=600, bbox_inches="tight")
+                            elif fmt == "pdf":
+                                fig.savefig(img_buf, format="pdf", bbox_inches="tight")
+                            elif fmt == "svg":
+                                fig.savefig(img_buf, format="svg", bbox_inches="tight")
+                            elif fmt == "eps":
+                                fig.savefig(img_buf, format="eps", bbox_inches="tight")
+                            plt.close(fig)
+                            
+                            zip_file.writestr(f"{meta['filename']}.{ext}", img_buf.getvalue())
+                        except Exception as e:
+                            import traceback
+                            error_msg = f"Error generating {pid}: {str(e)}\n\n{traceback.format_exc()}"
+                            zip_file.writestr(f"ERROR_{pid}.txt", error_msg)
+                            
+                yield zip_buffer.getvalue()
+            except Exception as e:
+                import sys, traceback
+                print(f"EXCEPTION IN ZIP DOWNLOAD {tab_name}: {e}", file=sys.stderr, flush=True)
+                traceback.print_exc(file=sys.stderr)
+                raise
+        
+        zip_fn.__name__ = f"dl_zip_{tab_name}"
+        return render.download(filename=f"lipidomics_{tab_name}_plots.zip")(zip_fn)
 
     # Register ZIP downloads for all 6 tabs
     tabs_plots = {
