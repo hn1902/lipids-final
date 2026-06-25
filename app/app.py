@@ -14,10 +14,20 @@ Running:
 """
 
 import io
+import os
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from typing import Dict, Any, List
+import numpy as np
+import scipy.stats as stats
+import statsmodels.stats.multitest as mt
+import shinyswatch
+from dotenv import load_dotenv
+
+# Load environment variables (e.g. GROQ_API_KEY) from .env if present
+load_dotenv()
 
 from shiny import App, Inputs, Outputs, Session, reactive, render, ui
 
@@ -161,7 +171,7 @@ def bulk_export_controls(tab_id):
                         "pdf": "PDF (Vector)",
                         "svg": "SVG (Vector)",
                         "eps": "EPS (Vector - No Transparency)"
-                    }),
+                    }, selected="eps"),
                     style="width: 220px; display: inline-block; margin-bottom: 0;"
                 ),
                 ui.download_button(f"dl_zip_{tab_id}", "Download All (ZIP)", class_="btn-sm btn-primary ms-2"),
@@ -635,6 +645,31 @@ app_ui = ui.page_navbar(
         ),
     ),
 
+    ui.nav_panel(
+        "✨ AI Report",
+        ui.layout_sidebar(
+            ui.sidebar(
+                ui.h5("Report Settings"),
+                ui.input_password("ai_api_key", "Groq API Key:", value=""),
+                ui.input_select("ai_audience", "Target Audience:", 
+                                choices=["Layperson", "Clinician", "Researcher"],
+                                selected="Researcher"),
+                ui.p("Reports will automatically include statistical significance if 'Run Analysis' was pressed in the Statistics tab.", class_="text-muted small"),
+                ui.input_action_button("btn_generate_report", "Generate Report",
+                                       class_="btn-primary w-100"),
+                ui.hr(),
+                ui.h5("Downloads"),
+                ui.download_button("dl_report_md", "Download Markdown (.md)", class_="btn-sm btn-outline-secondary w-100 mb-2"),
+                ui.download_button("dl_report_txt", "Download Text (.txt)", class_="btn-sm btn-outline-secondary w-100"),
+                width=250,
+            ),
+            ui.div(
+                ui.output_ui("ai_report_content"),
+                style="padding: 20px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); color: #333;"
+            )
+        )
+    ),
+
     title=ui.tags.span(
         ui.tags.b("Lipidomics"),
         ui.tags.span(" Data Analysis", style="font-weight:300"),
@@ -670,6 +705,11 @@ def plot_hg_abundance_bar(d, grp):
 
 def server(input: Inputs, output: Outputs, session: Session):
 
+    @reactive.effect
+    async def _ws_keepalive():
+        reactive.invalidate_later(25)  # every 25s — below any proxy's idle threshold
+        await session.send_custom_message("keepalive", {"t": "ping"})
+
     # ------------------------------------------------------------------ #
     #  REACTIVE CALCULATIONS                                               #
     # ------------------------------------------------------------------ #
@@ -678,6 +718,140 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     # Reactive value to hold preprocessing report lines for the UI
     _preprocess_report_lines = reactive.value([])
+
+    # AI Report State
+    ai_report_markdown = reactive.value("Click **Generate Report** to begin.")
+    
+    @reactive.effect
+    def _invalidate_stale_report():
+        raw_df()
+        _cohort_confirmed()
+        ai_report_markdown.set("Click **Generate Report** to begin.")
+    
+    @reactive.effect
+    @reactive.event(input.btn_generate_report)
+    async def generate_ai_report():
+        if not _cohort_confirmed():
+            ai_report_markdown.set("⚠️ **Error:** Cohort mapping must be confirmed before generating a report.")
+            return
+            
+        dm = df_meta()
+        dp = df_p()
+        dc = df_cohort()
+        if dm.empty or dp.empty or dc.empty:
+            ai_report_markdown.set("⚠️ **Error:** Missing dataset.")
+            return
+            
+        # Get comparison cohorts
+        comparison_cohorts = dc.columns.tolist()
+        if len(comparison_cohorts) < 2:
+            ai_report_markdown.set("⚠️ **Error:** At least 2 cohorts are required to generate a comparison report.")
+            return
+            
+        # Comparison basis (global control or None)
+        comparison_basis = input.stat_ctrl() if input.stat_ctrl() else None 
+        
+        from report_context import build_llm_context
+        from llm_service import ReportGenerator
+        
+        # Try to get stats if computed
+        df_stats = pd.DataFrame()
+        df_pw_stats = pd.DataFrame()
+        try:
+            with reactive.isolate():
+                from shiny.types import SilentException, SilentCancelOutputException
+                df_stats, df_pw_stats = stat_result()
+        except Exception:
+            pass
+            
+        # Try to get PCA if computed
+        df_pca = None
+        variance = None
+        try:
+            df_pca, variance, _ = pca_result()
+        except Exception:
+            pass
+            
+        # Fetch detailed tab analyses
+        c_data, u_data, h_data, l_data = {}, {}, {}, {}
+        try:
+            with reactive.isolate():
+                c_data = cl_data()
+                u_data = us_data()
+                h_data = hg_data()
+                l_data = lc_data()
+        except Exception as e:
+            from shiny.types import SilentException, SilentCancelOutputException
+            if isinstance(e, (SilentException, SilentCancelOutputException)):
+                ai_report_markdown.set("⚠️ **Error:** Please visit the Chain Length, Unsaturation, Head Group, and Lipid Class tabs to initialize them before generating a report.")
+                return
+            ai_report_markdown.set(f"⚠️ **Error fetching detailed analysis:** {str(e)}")
+            return
+            
+        with reactive.isolate():
+            try:
+                odd_chain = odd_chain_fraction(dm, dc)
+            except Exception:
+                odd_chain = pd.DataFrame()
+        
+        ai_report_markdown.set("⏳ **Building context and analyzing findings...**")
+        
+        # Build Context
+        try:
+            ctx = build_llm_context(
+                df_meta=dm,
+                df_cohort=dc,
+                comparison_cohorts=comparison_cohorts,
+                df_pca=df_pca,
+                variance=variance,
+                comparison_basis=comparison_basis,
+                df_stats=df_stats,
+                df_pw_stats=df_pw_stats,
+                c_data=c_data,
+                u_data=u_data,
+                h_data=h_data,
+                l_data=l_data,
+                odd_chain=odd_chain
+            )
+        except Exception as e:
+            ai_report_markdown.set(f"⚠️ **Error building context:** {str(e)}")
+            return
+        
+        ai_report_markdown.set("⏳ **Context built. Sending to AI model...**")
+        
+        # Generate Report
+        try:
+            import os
+            api_key = input.ai_api_key() or os.environ.get("GROQ_API_KEY", "")
+            if not api_key:
+                ai_report_markdown.set("⚠️ **Error:** No Groq API Key provided. Please enter it in the sidebar or set the GROQ_API_KEY environment variable.")
+                return
+            llm = ReportGenerator(api_key=api_key)
+        except Exception as e:
+            print(f"LLM init error: {e}", flush=True)
+            ai_report_markdown.set("⚠️ **Error initializing the AI client.** Check that your API key is valid and try again.")
+            return
+            
+        audience = input.ai_audience()
+        
+        stream_chunks = []
+        async for chunk in llm.generate_report_stream(ctx, audience):
+            stream_chunks.append(chunk)
+            ai_report_markdown.set("".join(stream_chunks) + " ▌")
+            
+        ai_report_markdown.set("".join(stream_chunks))
+
+    @render.download(filename="lipidomics_report.md")
+    def dl_report_md():
+        yield ai_report_markdown()
+        
+    @render.download(filename="lipidomics_report.txt")
+    def dl_report_txt():
+        yield ai_report_markdown()
+
+    @render.ui
+    def ai_report_content():
+        return ui.markdown(ai_report_markdown())
 
     @reactive.calc
     def raw_df():
@@ -2265,3 +2439,5 @@ def server(input: Inputs, output: Outputs, session: Session):
 # ---------------------------------------------------------------------------
 
 app = App(app_ui, server)
+app.sanitize_errors = True
+
