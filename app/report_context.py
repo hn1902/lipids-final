@@ -188,7 +188,7 @@ def summarize_headgroup(h_data):
     return sentences, None
 
 
-def build_llm_context(df_meta, df_cohort, comparison_cohorts, df_pca=None, variance=None, comparison_basis=None, df_stats=None, df_pw_stats=None, c_data=None, u_data=None, h_data=None, l_data=None, odd_chain=None):
+def build_llm_context(df_meta, df_cohort, comparison_cohorts, df_pca=None, variance=None, comparison_basis=None, df_stats=None, df_pw_stats=None, c_data=None, u_data=None, h_data=None, l_data=None, odd_chain=None, available_images=None):
     """
     Builds the structured dictionary payload for the LLM report generation.
     """
@@ -283,5 +283,6 @@ def build_llm_context(df_meta, df_cohort, comparison_cohorts, df_pca=None, varia
         "top_consistent_changes_across_cohorts": global_changes,
         "cohort_specific_outliers": specific_changes,
         "significant_class_shifts": sig_shifts,
-        "calculated_limitations": limitations
+        "calculated_limitations": limitations,
+        "available_images": available_images if available_images else []
     }

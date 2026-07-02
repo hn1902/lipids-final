@@ -21,6 +21,8 @@ CRITICAL RULES:
 3. No External Literature: DO NOT cite external literature or prior knowledge. Rely ONLY on the provided data.
 4. Objective Tone: State the magnitude and direction of change objectively. Use terms like "significantly enriched" only if a p-value/FDR is provided and is < 0.05.
 5. Report Level Constraints: If the JSON specifies "report_level": "descriptive", you MUST NOT discuss statistical significance, p-values, or confident enrichments. You must only discuss general trends and visual separation.
+6. Image Embedding: If the payload contains an 'available_images' list, you MUST embed those exact markdown images (e.g., `![Image Title](/reports/filename.png)`) directly into the corresponding sections of your report. You must provide 1-2 paragraphs immediately below the image explaining what the reader is looking at, using the statistical data to guide your explanation of the visual trends.
+7. Extreme Verbosity: You must expand heavily on all provided data. Write a massive, comprehensive, multi-page report. Use at least 2-3 detailed paragraphs per analytical section. Do not summarize briefly; expand on the nuances of the shifts.
 """
 
     AUDIENCE_PROMPTS = {
@@ -56,7 +58,7 @@ DATA PAYLOAD:
 {payload_json}
 ```
 
-Now write the report in EXACTLY this order. Use a simple markdown header (e.g. `## Section Name`) for each section:
+Now write the report in EXACTLY this order. Use a simple markdown header (e.g. `## Section Name`) for each section. If an image from `available_images` corresponds to a section, embed it as a markdown image and explain it:
 1. Executive Summary
 2. Dataset & Confidence Overview
 3. PCA & Global Profile Separation

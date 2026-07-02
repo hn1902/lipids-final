@@ -1002,11 +1002,14 @@ def plot_zscore_heatmap(df, title, cmap="coolwarm"):
     if df is None or df.empty:
         fig, ax = plt.subplots(figsize=(6, 4))
         ax.text(0.5, 0.5, "No data", ha="center", va="center"); return fig
+    df_plot = df.fillna(0).copy()
+    df_plot.index = range(1, len(df_plot) + 1)
     g = sns.clustermap(
-        df.fillna(0),
+        df_plot,
         cmap=cmap, center=0,
-        figsize=(max(6, df.shape[1] * 0.8 + 2),
-                 max(4, df.shape[0] * 0.4 + 2)),
+        row_cluster=False, col_cluster=False,
+        figsize=(max(6, df_plot.shape[1] * 0.8 + 2),
+                 max(4, df_plot.shape[0] * 0.4 + 2)),
         linewidths=0.3, dendrogram_ratio=(0.1, 0.15),
         cbar_kws={"shrink": 0.6},
     )
@@ -1018,6 +1021,8 @@ def plot_correlation_heatmap(df, title):
         fig, ax = plt.subplots(figsize=(6, 5))
         ax.text(0.5, 0.5, "No data", ha="center", va="center"); return fig
     corr = df.T.corr()
+    corr.index = range(1, len(corr) + 1)
+    corr.columns = range(1, len(corr) + 1)
     fig, ax = plt.subplots(figsize=(max(5, len(corr) * 0.5 + 2),
                                    max(4, len(corr) * 0.5 + 1.5)))
     sns.heatmap(corr, ax=ax, cmap="coolwarm", vmin=-1, vmax=1,
@@ -1030,7 +1035,8 @@ def plot_fold_change_heatmap(df_log, title, cmap="RdBu_r"):
     if df_log is None or df_log.empty:
         fig, ax = plt.subplots(figsize=(6, 4))
         ax.text(0.5, 0.5, "No data", ha="center", va="center"); return fig
-    data = df_log.fillna(0)
+    data = df_log.fillna(0).copy()
+    data.index = range(1, len(data) + 1)
     vabs = max(abs(data.values.min()), abs(data.values.max()), 0.1)
     fig, ax = plt.subplots(figsize=(max(5, data.shape[1] * 0.8 + 2.5),
                                     max(4, data.shape[0] * 0.4 + 2)))
@@ -1044,36 +1050,85 @@ def plot_heatmap_general(df, title, cmap="YlOrRd", vmin=None, vmax=None):
     if df is None or df.empty:
         fig, ax = plt.subplots(figsize=(6, 4))
         ax.text(0.5, 0.5, "No data", ha="center", va="center"); return fig
-    fig, ax = plt.subplots(figsize=(max(5, df.shape[1] * 0.75 + 2.5),
-                                    max(4, df.shape[0] * 0.4 + 2)))
-    sns.heatmap(df.fillna(0), ax=ax, cmap=cmap, vmin=vmin, vmax=vmax,
+    df_plot = df.fillna(0).copy()
+    df_plot.index = range(1, len(df_plot) + 1)
+    fig, ax = plt.subplots(figsize=(max(5, df_plot.shape[1] * 0.75 + 2.5),
+                                    max(4, df_plot.shape[0] * 0.4 + 2)))
+    sns.heatmap(df_plot, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax,
                 linewidths=0.3, cbar_kws={"shrink": 0.8})
     ax.set_title(title); fig.tight_layout(); return fig
 
 
-def plot_donut_chart(series, title):
+def plot_donut_chart(series, title, threshold=0.03):
     fig, ax = plt.subplots(figsize=(6, 5))
     if series is None or series.empty:
         ax.text(0.5, 0.5, "No data", ha="center", va="center"); return fig
+    
+    total = series.sum()
+    other_items = []
+    if total > 0:
+        mask = (series / total) >= threshold
+        large = series[mask].copy()
+        small = series[~mask]
+        if not small.empty:
+            large["Other"] = small.sum()
+            small_pct = (small / total) * 100
+            other_items = [f"{idx} ({pct:.3g}%)" for idx, pct in small_pct.items()]
+        series = large.sort_values(ascending=False)
+        
     vals   = series.values
     labels = series.index.tolist()
     colors = [COHORT_COLORS[i % len(COHORT_COLORS)] for i in range(len(labels))]
+    # Ensure 'Other' is always a distinct neutral color (like grey) if it exists
+    if "Other" in labels:
+        colors[labels.index("Other")] = "#d3d3d3"
+        
     ax.pie(vals, labels=labels, colors=colors,
-           autopct="%1.1f%%", pctdistance=0.82,
+           autopct="%1.3g%%", pctdistance=0.82,
            wedgeprops=dict(width=0.5, edgecolor="white"), startangle=90)
+    
+    if other_items:
+        import textwrap
+        wrapped_text = textwrap.fill("Other includes: " + ", ".join(other_items), width=70)
+        plt.figtext(0.5, 0.02, wrapped_text, ha="center", fontsize=8, color="gray")
+        fig.subplots_adjust(bottom=0.15)
+        
     ax.set_title(title); fig.tight_layout(); return fig
 
 
-def plot_pie_chart(series, title):
+def plot_pie_chart(series, title, threshold=0.03):
     fig, ax = plt.subplots(figsize=(6, 5))
     if series is None or series.empty:
         ax.text(0.5, 0.5, "No data", ha="center", va="center"); return fig
+        
+    total = series.sum()
+    other_items = []
+    if total > 0:
+        mask = (series / total) >= threshold
+        large = series[mask].copy()
+        small = series[~mask]
+        if not small.empty:
+            large["Other"] = small.sum()
+            small_pct = (small / total) * 100
+            other_items = [f"{idx} ({pct:.3g}%)" for idx, pct in small_pct.items()]
+        series = large.sort_values(ascending=False)
+        
     vals   = series.values
     labels = series.index.tolist()
     colors = [COHORT_COLORS[i % len(COHORT_COLORS)] for i in range(len(labels))]
+    if "Other" in labels:
+        colors[labels.index("Other")] = "#d3d3d3"
+        
     ax.pie(vals, labels=labels, colors=colors,
-           autopct="%1.1f%%", startangle=90,
+           autopct="%1.3g%%", startangle=90,
            wedgeprops=dict(edgecolor="white"))
+           
+    if other_items:
+        import textwrap
+        wrapped_text = textwrap.fill("Other includes: " + ", ".join(other_items), width=70)
+        plt.figtext(0.5, 0.02, wrapped_text, ha="center", fontsize=8, color="gray")
+        fig.subplots_adjust(bottom=0.15)
+        
     ax.set_title(title); fig.tight_layout(); return fig
 
 

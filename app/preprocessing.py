@@ -283,9 +283,10 @@ _RE_TIER1_CER = re.compile(
 )
 
 _RE_TIER1_STD = re.compile(
-    r"^(?P<hg>[A-Za-z]+)\s+"
-    r"(?:[OP]-?)?"
-    r"(?P<cl>\d+):(?P<us>\d+)",
+    r"^(?P<hg>[A-Za-z]+)"                      # base class: LPC, PC, PE, SM …
+    r"(?:\s+(?P<mod>[OP])(?=-|\s|\d))?"         # optional space + O or P followed by dash/space/digit
+    r"\s*-?\s*"                                  # optional separator
+    r"(?P<cl>\d+):(?P<us>\d+)",                 # chain:unsaturation
 )
 
 _RE_TIER2_LOOSE = re.compile(
@@ -302,12 +303,12 @@ def _normalise_head_group(hg: str) -> str:
     """
     Produce 'Head Group 2' — normalised lipid class.
 
-    - Strip O/P plasmalogen suffix
     - Strip trailing digits (GD1 → GD)
     - Normalise HexCer variants
+    - DO NOT strip O/P ether/plasmalogen suffixes — these are distinct classes
     """
     hg2 = hg.strip()
-    hg2 = re.sub(r"\s+[OP]$", "", hg2).strip()
+    # Do NOT strip " O" or " P" — LPC O and LPC are different lipid classes
     hg2 = re.sub(r"\d+$", "", hg2).strip()
     hg2 = hg2.replace("HexCer", "Hex_Cer")
     return hg2 if hg2 else "Unparsed"
@@ -337,9 +338,11 @@ def parse_lipid_name(name: str) -> dict:
         # Tier 1b: Standard lipid  (PC 34:1, PE O-36:2, SM 42:2;O)
         m = _RE_TIER1_STD.match(name)
         if m:
-            hg = m.group("hg")
-            cl = int(m.group("cl"))
-            us = int(m.group("us"))
+            base = m.group("hg")
+            mod  = m.group("mod")            # "O", "P", or None
+            hg   = f"{base} {mod}" if mod else base   # "LPC O", "PE P", or "LPC"
+            cl   = int(m.group("cl"))
+            us   = int(m.group("us"))
         else:
             # Tier 2: Loose — head-group anywhere + chain:unsat anywhere
             m = _RE_TIER2_LOOSE.match(name)

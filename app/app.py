@@ -216,6 +216,11 @@ app_ui = ui.page_navbar(
             .dropdown-divider {
                 margin: 4px 0;
             }
+            .shiny-plot-output img {
+                object-fit: contain !important;
+                height: 100% !important;
+                width: 100% !important;
+            }
         """)
     ),
 
@@ -583,13 +588,13 @@ app_ui = ui.page_navbar(
                 width=220,
             ),
             bulk_export_controls("sg"),
-            ui.h4("MADAG (MAG / DAG / TAG)"),
+            ui.h4("Storage Lipids (MAG / DAG / TAG)"),
             ui.layout_column_wrap(
-                _card("MADAG — Proportions Heatmap",
+                _card("Storage Lipids — Proportions Heatmap",
                       ui.output_plot("plt_sg_madag_prop"), plot_toolbar_ui("plt_sg_madag_prop")),
-                _card("MADAG — Log Fold Change",
+                _card("Storage Lipids — Log Fold Change",
                       ui.output_plot("plt_sg_madag_fc"), plot_toolbar_ui("plt_sg_madag_fc")),
-                _card("MADAG — Z-score",
+                _card("Storage Lipids — Z-score",
                       ui.output_plot("plt_sg_madag_z"), plot_toolbar_ui("plt_sg_madag_z")),
                 width="1/3",
             ),
@@ -1667,9 +1672,9 @@ def server(input: Inputs, output: Outputs, session: Session):
         "plt_lc_fc": _lc_fc,
 
         # Sub-groups Tab
-        "plt_sg_madag_prop": lambda: plot_heatmap_general(sg_madag_result().get('prop'), 'MADAG — Proportions', cmap='YlOrRd') if sg_madag_result() else _empty_plot(),
-        "plt_sg_madag_fc": lambda: plot_fold_change_heatmap(sg_madag_result().get('logfc'), 'MADAG — Log Fold Change') if sg_madag_result() else _empty_plot(),
-        "plt_sg_madag_z": lambda: plot_zscore_heatmap(sg_madag_result().get('zscore'), 'MADAG — Z-score') if sg_madag_result() else _empty_plot(),
+        "plt_sg_madag_prop": lambda: plot_heatmap_general(sg_madag_result().get('prop'), 'Storage Lipids — Proportions', cmap='YlOrRd') if sg_madag_result() else _empty_plot(),
+        "plt_sg_madag_fc": lambda: plot_fold_change_heatmap(sg_madag_result().get('logfc'), 'Storage Lipids — Log Fold Change') if sg_madag_result() else _empty_plot(),
+        "plt_sg_madag_z": lambda: plot_zscore_heatmap(sg_madag_result().get('zscore'), 'Storage Lipids — Z-score') if sg_madag_result() else _empty_plot(),
         "plt_sg_sph_prop": lambda: plot_heatmap_general(sg_sph_result().get('prop'), 'Sphingolipids — Proportions', cmap='YlOrRd') if sg_sph_result() else _empty_plot(),
         "plt_sg_sph_fc": lambda: plot_fold_change_heatmap(sg_sph_result().get('logfc'), 'Sphingolipids — Log Fold Change') if sg_sph_result() else _empty_plot(),
         "plt_sg_sph_z": lambda: plot_zscore_heatmap(sg_sph_result().get('zscore'), 'Sphingolipids — Z-score') if sg_sph_result() else _empty_plot(),
