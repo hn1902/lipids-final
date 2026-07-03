@@ -55,8 +55,12 @@ from scipy import stats
 from scipy.stats import f_oneway
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-
 warnings.filterwarnings("ignore")
+
+def _close_all_figures():
+    """Prevent matplotlib figure accumulation in long-running Shiny sessions."""
+    import matplotlib.pyplot as plt
+    plt.close("all")
 
 # ---------------------------------------------------------------------------
 # Colour palette (up to 10 cohorts)
@@ -930,6 +934,68 @@ def plot_pca_variance(variance):
     fig.tight_layout(); return fig
 
 
+def plot_pca_scree(variance):
+    """Scree plot — line plot of explained variance per PC."""
+    fig, ax = plt.subplots(figsize=(5, 4))
+    if variance is None or len(variance) == 0:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center")
+        return fig
+
+    pcs   = [f"PC{i+1}" for i in range(len(variance))]
+    vals  = variance * 100
+    cumv  = np.cumsum(vals)
+
+    ax.plot(pcs, vals, "o-", color=COHORT_COLORS[0], lw=2, ms=7, label="Per component")
+    ax.plot(pcs, cumv, "s--", color=COHORT_COLORS[1], lw=1.5, ms=5, label="Cumulative")
+    ax.axhline(5, color="grey", lw=0.8, ls=":", label="5% threshold")
+
+    for i, (pc, v) in enumerate(zip(pcs, vals)):
+        ax.annotate(f"{v:.1f}%", (pc, v),
+                    textcoords="offset points", xytext=(0, 8),
+                    ha="center", fontsize=8)
+
+    ax.set_ylabel("Explained Variance (%)")
+    ax.set_title("PCA \u2014 Scree Plot")
+    ax.legend(fontsize=8)
+    ax.set_ylim(0, max(cumv) * 1.15)
+    fig.tight_layout()
+    return fig
+
+
+def plot_pca_loadings(loadings, variance, top_n=15):
+    """
+    loadings : DataFrame, index=Sample Name, columns=PC1/PC2[/PC3]
+    variance : array of explained_variance_ratio_
+    """
+    if loadings is None or loadings.empty:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "No loadings data", ha="center", va="center")
+        return fig
+
+    pcs = [c for c in loadings.columns if c in ["PC1", "PC2", "PC3"]]
+    n_pcs = len(pcs)
+    fig, axes = plt.subplots(n_pcs, 1,
+                             figsize=(8, 4 * n_pcs),
+                             squeeze=False)
+
+    for i, pc in enumerate(pcs):
+        ax = axes[i][0]
+        col = loadings[pc].dropna()
+        top = col.abs().nlargest(top_n).index
+        vals = col.loc[top].sort_values()
+        colors = [COHORT_COLORS[0] if v >= 0 else COHORT_COLORS[3] for v in vals]
+        ax.barh(range(len(vals)), vals.values, color=colors, edgecolor="white")
+        ax.set_yticks(range(len(vals)))
+        ax.set_yticklabels(vals.index.tolist(), fontsize=7)
+        pct = variance[i] * 100 if i < len(variance) else 0
+        ax.set_title(f"{pc} Loadings (explains {pct:.1f}% variance) \u2014 Top {top_n}")
+        ax.set_xlabel("Loading value")
+        ax.axvline(0, color="black", lw=0.5)
+
+    fig.tight_layout()
+    return fig
+
+
 def plot_pca_2d(df_pca):
     fig, ax = plt.subplots(figsize=(7, 5))
     if df_pca is None or df_pca.empty or "PC1" not in df_pca.columns:
@@ -967,6 +1033,55 @@ def plot_pca_3d(df_pca):
     ax.set_xlabel("PC1"); ax.set_ylabel("PC2"); ax.set_zlabel("PC3")
     ax.set_title("PCA — 3D Scores")
     ax.legend(fontsize=7); fig.tight_layout(); return fig
+
+
+def plot_cohort_dendrogram(df_cohort):
+    """
+    Hierarchical clustering dendrogram of cohorts based on full lipid profile.
+    df_cohort: index=Sample Name, cols=cohort names
+    """
+    from scipy.cluster.hierarchy import linkage, dendrogram
+    from scipy.spatial.distance import pdist
+
+    fig, ax = plt.subplots(figsize=(max(6, len(df_cohort.columns) * 0.8 + 2), 5))
+
+    if df_cohort is None or df_cohort.empty or df_cohort.shape[1] < 2:
+        ax.text(0.5, 0.5,
+                "At least 2 cohorts required for clustering",
+                ha="center", va="center")
+        return fig
+
+    # Transpose: rows=cohorts, cols=lipids. Fill NaN with 0.
+    X = df_cohort.T.fillna(0).values
+    labels = df_cohort.columns.tolist()
+
+    # Standardize per lipid to avoid scale dominance
+    X_scaled = StandardScaler().fit_transform(X)
+
+    # Ward linkage on Euclidean distance
+    Z = linkage(X_scaled, method="ward", metric="euclidean")
+
+    ddata = dendrogram(
+        Z,
+        labels=labels,
+        ax=ax,
+        leaf_rotation=45,
+        leaf_font_size=9,
+        color_threshold=0,
+        above_threshold_color="black"
+    )
+
+    # Color the leaf labels to match cohort colors
+    xlbls = ax.get_xmajorticklabels()
+    for lbl in xlbls:
+        idx = labels.index(lbl.get_text()) if lbl.get_text() in labels else 0
+        lbl.set_color(COHORT_COLORS[idx % len(COHORT_COLORS)])
+
+    ax.set_title("Cohort Clustering Dendrogram (Ward linkage, full lipid profile)")
+    ax.set_ylabel("Distance")
+    ax.set_xlabel("Cohort")
+    fig.tight_layout()
+    return fig
 
 
 def plot_kde_histogram(long_df, x_col, cohort_col, title, xlabel):
@@ -1029,6 +1144,71 @@ def plot_correlation_heatmap(df, title):
                 annot=len(corr) <= 15, fmt=".2f", linewidths=0.3, square=True,
                 cbar_kws={"shrink": 0.8})
     ax.set_title(title); fig.tight_layout(); return fig
+
+
+def plot_replicate_correlation(df_p, df_exps):
+    """
+    df_p   : DataFrame, cols=['Sample Name', Exp1, Exp2, ...] (lipids as rows)
+    df_exps: DataFrame cols=[Exp, Mutation, Replicate]
+    """
+    if df_p is None or df_p.empty or df_exps is None or df_exps.empty:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "No data", ha="center", va="center")
+        return fig
+
+    exp_cols = [c for c in df_p.columns if c != "Sample Name"]
+
+    if len(exp_cols) < 2:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "At least 2 replicates required", ha="center", va="center")
+        return fig
+
+    # Sort columns so replicates from same cohort are adjacent
+    sorted_cols = sorted(exp_cols)
+    df_sub  = df_p[sorted_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+    corr_df = df_sub.corr(method="pearson")
+
+    # Labels: just the cohort names
+    labels = sorted_cols
+
+    n    = len(sorted_cols)
+    size = max(6, n * 0.55 + 2)
+    fig, ax = plt.subplots(figsize=(size, size))
+
+    sns.heatmap(
+        corr_df,
+        ax=ax,
+        cmap="RdYlGn",
+        vmin=-1, vmax=1,
+        annot=True, fmt=".2f", annot_kws={"size": max(5, 9 - n // 4)},
+        linewidths=0.3,
+        xticklabels=labels, yticklabels=labels,
+        cbar_kws={"shrink": 0.7, "label": "Pearson r"}
+    )
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right", fontsize=7)
+    ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=7)
+
+    # Draw rectangles around same-cohort blocks
+    cohort_order = sorted_cols
+    i = 0
+    while i < n:
+        coh = cohort_order[i]
+        j   = i
+        while j < n and cohort_order[j] == coh:
+            j += 1
+        block_size = j - i
+        if block_size > 1:
+            color = COHORT_COLORS[
+                list(dict.fromkeys(cohort_order)).index(coh) % len(COHORT_COLORS)
+            ]
+            rect = plt.Rectangle((i, i), block_size, block_size,
+                                  fill=False, edgecolor=color, lw=2.5)
+            ax.add_patch(rect)
+        i = j
+
+    ax.set_title("Replicate-Level Correlation Matrix (QC)")
+    fig.tight_layout()
+    return fig
 
 
 def plot_fold_change_heatmap(df_log, title, cmap="RdBu_r"):
@@ -1425,6 +1605,125 @@ def plot_pca_2d_replicates(df_p, df_exps):
     fig.tight_layout()
     return fig
 
+
+def plot_volcano(df_pw_stat, df_logfc, var_col, alpha=0.05, fc_thresh=1.0):
+    """
+    df_pw_stat : output of pw_stat_result() — cols include var_col, Cohort, p_adj, significant
+    df_logfc   : output of fold_change(...) / np.log(2) — index=var levels, cols=cohorts
+    var_col    : the variable column name (e.g. "Head Group 2")
+    """
+    if df_pw_stat is None or df_pw_stat.empty or df_logfc is None or df_logfc.empty:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "Run statistics first", ha="center", va="center")
+        return fig
+
+    cohorts = df_pw_stat["Cohort"].unique().tolist()
+    n = len(cohorts)
+    use_subplots = n > 4
+    fig, axes = plt.subplots(1, n if use_subplots else 1,
+                             figsize=((5 * n) if use_subplots else 7, 5),
+                             squeeze=False)
+
+    colors_map = {c: COHORT_COLORS[i % len(COHORT_COLORS)] for i, c in enumerate(cohorts)}
+
+    for idx, coh in enumerate(cohorts):
+        ax = axes[0][idx] if use_subplots else axes[0][0]
+        sub = df_pw_stat[df_pw_stat["Cohort"] == coh].copy()
+        if coh not in df_logfc.columns:
+            continue
+        sub = sub.merge(
+            df_logfc[[coh]].rename(columns={coh: "log2FC"}).reset_index()
+                           .rename(columns={"index": var_col}),
+            on=var_col, how="left"
+        )
+        sub["-log10p"] = -np.log10(sub["p_adj"].clip(lower=1e-300))
+        sig_color   = colors_map[coh]
+        insig_color = "#cccccc"
+
+        for _, row in sub.iterrows():
+            is_sig = row["p_adj"] < alpha and abs(row["log2FC"]) > fc_thresh
+            color = sig_color if is_sig else insig_color
+            ax.scatter(row["log2FC"], row["-log10p"], color=color,
+                       s=60, zorder=3, edgecolors="white", linewidths=0.5)
+            if is_sig:
+                ax.annotate(str(row[var_col]), (row["log2FC"], row["-log10p"]),
+                            fontsize=6, ha="left", xytext=(3, 2),
+                            textcoords="offset points")
+
+        ax.axhline(-np.log10(alpha), color="red", lw=0.8, ls="--", label=f"p={alpha}")
+        ax.axvline( fc_thresh, color="grey", lw=0.8, ls="--")
+        ax.axvline(-fc_thresh, color="grey", lw=0.8, ls="--")
+        ax.set_xlabel("log\u2082 Fold Change")
+        ax.set_ylabel("\u2212log\u2081\u2080(adjusted p-value)")
+        ax.set_title(f"Volcano \u2014 {coh}" if use_subplots else "Volcano Plot")
+        ax.legend(fontsize=7)
+
+    fig.tight_layout()
+    return fig
+
+
+def plot_lipid_boxplot(df_p, df_exps, lipid_name):
+    """
+    df_p       : replicate-level DataFrame, cols=['Sample Name', Exp1, Exp2, ...]
+    df_exps    : Exp->Mutation mapping DataFrame, cols=[Exp, Mutation, Replicate]
+    lipid_name : str, must match a value in df_p['Sample Name']
+    """
+    if df_p is None or df_p.empty or df_exps is None or df_exps.empty:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "No data", ha="center", va="center")
+        return fig
+
+    # df_p has 'Sample Name' as a column, not the index
+    if "Sample Name" in df_p.columns:
+        match = df_p[df_p["Sample Name"] == lipid_name]
+        if match.empty:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, f"Lipid '{lipid_name}' not found", ha="center", va="center")
+            return fig
+        abund_df = match.drop(columns=["Sample Name"])
+        abund_values = abund_df.iloc[0].values
+        exp_cols = abund_df.columns.tolist()
+    else:
+        if lipid_name not in df_p.index:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, f"Lipid '{lipid_name}' not found", ha="center", va="center")
+            return fig
+        abund_df = df_p.loc[[lipid_name]]
+        abund_values = abund_df.iloc[0].values
+        exp_cols = abund_df.columns.tolist()
+
+    long = pd.DataFrame({
+        "Exp": range(len(exp_cols)),
+        "Abundance": pd.to_numeric(abund_values, errors="coerce"),
+        "Cohort": exp_cols
+    }).dropna(subset=["Abundance"])
+
+    cohorts = sorted(long["Cohort"].unique())
+    colors  = {c: COHORT_COLORS[i % len(COHORT_COLORS)] for i, c in enumerate(cohorts)}
+
+    fig, ax = plt.subplots(figsize=(max(5, len(cohorts) * 0.9 + 2), 5))
+
+    # Box plot
+    data_by_cohort = [long.loc[long["Cohort"] == c, "Abundance"].values for c in cohorts]
+    bp = ax.boxplot(data_by_cohort, patch_artist=True, widths=0.4,
+                    medianprops={"color": "black", "lw": 2})
+    for patch, coh in zip(bp["boxes"], cohorts):
+        patch.set_facecolor(colors[coh])
+        patch.set_alpha(0.6)
+
+    # Strip plot (individual points)
+    for i, coh in enumerate(cohorts):
+        y = long.loc[long["Cohort"] == coh, "Abundance"].values
+        x = np.random.normal(i + 1, 0.05, size=len(y))
+        ax.scatter(x, y, color=colors[coh], s=40, zorder=3,
+                   edgecolors="white", linewidths=0.5)
+
+    ax.set_xticks(range(1, len(cohorts) + 1))
+    ax.set_xticklabels(cohorts, rotation=30, ha="right", fontsize=9)
+    ax.set_ylabel("Abundance")
+    ax.set_title(f"{lipid_name} \u2014 Abundance by Cohort")
+    fig.tight_layout()
+    return fig
 
 # ---------------------------------------------------------------------------
 # Gaussian curve fitting on chain length histogram

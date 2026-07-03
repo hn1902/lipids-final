@@ -75,6 +75,12 @@ try:
         subgroup_analysis,
         summarise_top_changes,
         get_excel_sheet_names,
+        plot_pca_scree,
+        plot_pca_loadings,
+        plot_cohort_dendrogram,
+        plot_replicate_correlation,
+        plot_volcano,
+        plot_lipid_boxplot,
         SUBGROUP_MADAG,
         SUBGROUP_SPHINGOLIPIDS,
     )
@@ -122,6 +128,12 @@ except ImportError:
         subgroup_analysis,
         summarise_top_changes,
         get_excel_sheet_names,
+        plot_pca_scree,
+        plot_pca_loadings,
+        plot_cohort_dendrogram,
+        plot_replicate_correlation,
+        plot_volcano,
+        plot_lipid_boxplot,
         SUBGROUP_MADAG,
         SUBGROUP_SPHINGOLIPIDS,
     )
@@ -346,6 +358,7 @@ app_ui = ui.page_navbar(
                       ui.output_data_frame("tbl_exps")),
                 width=1,
             ),
+
             ui.layout_column_wrap(
                 _card("Others (Non-Lipid / Non-Parseable Compounds)",
                       ui.p("Compounds removed from the main analysis pipeline "
@@ -373,6 +386,23 @@ app_ui = ui.page_navbar(
         ui.layout_column_wrap(
             _card("PCA — Replicate Scatter with 95% Confidence Ellipses",
                   ui.output_plot("plt_pca_ellipse"), plot_toolbar_ui("plt_pca_ellipse")),
+            width=1,
+        ),
+        ui.layout_column_wrap(
+            _card("PCA — Scree Plot", ui.output_plot("plt_pca_scree"), plot_toolbar_ui("plt_pca_scree")),
+            _card("PCA — Top Lipid Loadings per Component", ui.output_plot("plt_pca_loadings"), plot_toolbar_ui("plt_pca_loadings")),
+            width="1/2",
+        ),
+        ui.layout_column_wrap(
+            _card("Cohort Clustering Dendrogram", ui.output_plot("plt_pca_dendro"), plot_toolbar_ui("plt_pca_dendro")),
+            width=1,
+        ),
+        ui.layout_column_wrap(
+            _card("Replicate Correlation Matrix (QC)",
+                  ui.p("This computes the Pearson correlation matrix across all replicates. For large datasets, this can take a few minutes.", class_="text-muted small mb-2"),
+                  ui.input_action_button("btn_run_qc", "Run QC (Replicate Correlation)", class_="btn-warning btn-sm mb-3", width="300px"),
+                  ui.output_plot("plt_rep_corr"),
+                  plot_toolbar_ui("plt_rep_corr")),
             width=1,
         ),
         ui.layout_column_wrap(
@@ -535,6 +565,7 @@ app_ui = ui.page_navbar(
     # =======================  Tab 7: Statistics  ===========================
     ui.nav_panel(
         "📈 Statistics",
+        bulk_export_controls("stat"),
         ui.layout_sidebar(
             ui.sidebar(
                 ui.h5("ANOVA / Post-hoc Controls"),
@@ -575,8 +606,34 @@ app_ui = ui.page_navbar(
                                          class_="btn-sm btn-outline-secondary mt-2")),
                 width=1,
             ),
+            ui.layout_column_wrap(
+                _card("Volcano Plot", ui.output_plot("plt_volcano"), plot_toolbar_ui("plt_volcano")),
+                width=1,
+            ),
         ),
     ),
+
+    # =======================  Tab: Lipid Explorer  =========================
+    ui.nav_panel(
+        "🔬 Lipid Explorer",
+        bulk_export_controls("lipid"),
+        ui.layout_sidebar(
+            ui.sidebar(
+                ui.output_ui("lipid_select_ui"),
+                ui.hr(),
+                ui.p("Select any lipid to see its abundance across all cohorts and replicates.",
+                     class_="text-muted small"),
+                width=260,
+            ),
+            ui.layout_column_wrap(
+                _card("Per-Lipid Abundance — Box / Strip Plot",
+                      ui.output_plot("plt_lipid_box"),
+                      plot_toolbar_ui("plt_lipid_box")),
+                width=1,
+            ),
+        ),
+    ),
+
 
     # =======================  Tab 8: Sub-groups  ===========================
     ui.nav_panel(
@@ -965,7 +1022,9 @@ def server(input: Inputs, output: Outputs, session: Session):
     # ------------------------------------------------------------------ #
 
     _cohort_mapping_df = reactive.value(pd.DataFrame())
-    _cohort_confirmed = reactive.value(False)
+    _cohort_confirmed = reactive.Value(False)
+    _qc_run = reactive.Value(False)
+    _rep_corr_run = reactive.Value(False)
     _cohort_confidence = reactive.value(0.0)
 
     def _compute_initial_mapping(df, hdr, crow_idx):
@@ -999,7 +1058,13 @@ def server(input: Inputs, output: Outputs, session: Session):
     @reactive.effect
     @reactive.event(input.btn_confirm_cohorts)
     def _confirm_cohorts():
+        print("DEBUG: CONFIRM CLICKED", flush=True)
         _cohort_confirmed.set(True)
+
+    @reactive.effect
+    @reactive.event(input.btn_run_qc)
+    def _run_qc():
+        _qc_run.set(True)
 
     @reactive.effect
     @reactive.event(input.btn_reset_cohorts)
@@ -1131,6 +1196,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     @reactive.calc
     def df_cohort():
+        print("DEBUG: df_cohort() called", flush=True)
         dp = df_p()
         exps = df_exps()
         if dp.empty or exps.empty:
@@ -1146,6 +1212,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     @reactive.calc
     def pca_result():
+        print("DEBUG: pca_result() called", flush=True)
         dc = df_cohort()
         if dc.empty:
             return pd.DataFrame(), [], pd.DataFrame()
@@ -1222,6 +1289,24 @@ def server(input: Inputs, output: Outputs, session: Session):
         alpha  = float(input.stat_alpha())
         corr   = input.stat_correction()
         return pointwise_stat_test(dm, dp, var, ctrl, alpha, corr)
+
+    @reactive.calc
+    @reactive.event(input.btn_run_stat)
+    def volcano_data():
+        """Compute fold-change data for volcano plot, gated on Run Analysis button."""
+        pw = pw_stat_result()
+        if pw is None or pw.empty:
+            return None
+        var_map = {"Head Group 2": "Head Group 2",
+                   "Acyl Chain Length": "Acyl Chain Length",
+                   "Unsaturation": "Unsaturation"}
+        var = var_map.get(input.stat_var(), "Head Group 2")
+        ctrl = input.stat_ctrl()
+        try:
+            logfc = fold_change(df_meta(), df_p(), var, ctrl) / np.log(2)
+        except Exception:
+            return None
+        return (pw, logfc, var)
 
     @reactive.calc
     def sg_madag_result():
@@ -1678,6 +1763,13 @@ def server(input: Inputs, output: Outputs, session: Session):
         "plt_sg_sph_prop": lambda: plot_heatmap_general(sg_sph_result().get('prop'), 'Sphingolipids — Proportions', cmap='YlOrRd') if sg_sph_result() else _empty_plot(),
         "plt_sg_sph_fc": lambda: plot_fold_change_heatmap(sg_sph_result().get('logfc'), 'Sphingolipids — Log Fold Change') if sg_sph_result() else _empty_plot(),
         "plt_sg_sph_z": lambda: plot_zscore_heatmap(sg_sph_result().get('zscore'), 'Sphingolipids — Z-score') if sg_sph_result() else _empty_plot(),
+        # New features
+        "plt_pca_scree": lambda: plot_pca_scree(pca_result()[1]),
+        "plt_pca_loadings": lambda: plot_pca_loadings(pca_result()[2], pca_result()[1]),
+        "plt_pca_dendro": lambda: plot_cohort_dendrogram(df_cohort()) if not df_cohort().empty else _empty_plot(),
+        "plt_volcano": lambda: plot_volcano(volcano_data()[0], volcano_data()[1], volcano_data()[2]) if volcano_data() is not None else _empty_plot("Run statistics first"),
+        "plt_lipid_box": lambda: plot_lipid_boxplot(df_p(), df_exps(), input.selected_lipid()) if not df_p().empty and _cohort_confirmed() and hasattr(input, 'selected_lipid') and input.selected_lipid() else _empty_plot("Select a lipid"),
+        "plt_rep_corr": lambda: plot_replicate_correlation(df_p(), df_exps()) if not df_p().empty else _empty_plot(),
     }
 
     plot_metadata = {
@@ -1720,6 +1812,13 @@ def server(input: Inputs, output: Outputs, session: Session):
         "plt_sg_sph_prop": {"filename": "subgroup_sphingolipids_proportions", "gated": True},
         "plt_sg_sph_fc": {"filename": "subgroup_sphingolipids_fold_change", "gated": True},
         "plt_sg_sph_z": {"filename": "subgroup_sphingolipids_zscore", "gated": True},
+        # New features
+        "plt_pca_scree": {"filename": "pca_scree_plot", "gated": False},
+        "plt_pca_loadings": {"filename": "pca_loadings", "gated": False},
+        "plt_pca_dendro": {"filename": "cohort_dendrogram", "gated": True},
+        "plt_volcano": {"filename": "volcano_plot", "gated": True},
+        "plt_lipid_box": {"filename": "lipid_boxplot", "gated": True},
+        "plt_rep_corr": {"filename": "replicate_correlation_qc", "gated": True},
     }
 
     HEATMAPS = {
@@ -2364,6 +2463,103 @@ def server(input: Inputs, output: Outputs, session: Session):
             traceback.print_exc(file=sys.stderr)
             return _empty_plot(f"Error rendering: {e}")
 
+    @render.plot
+    def plt_pca_scree():
+        print("DEBUG: plt_pca_scree render called", flush=True)
+        if plot_metadata["plt_pca_scree"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_pca_scree"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_pca_scree: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_pca_loadings():
+        print("DEBUG: plt_pca_loadings render called", flush=True)
+        if plot_metadata["plt_pca_loadings"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_pca_loadings"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_pca_loadings: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_pca_dendro():
+        print("DEBUG: plt_pca_dendro render called", flush=True)
+        if plot_metadata["plt_pca_dendro"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_pca_dendro"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_pca_dendro: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_volcano():
+        print("DEBUG: plt_volcano render called", flush=True)
+        if plot_metadata["plt_volcano"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_volcano"]()
+        except Exception as e:
+            if type(e).__name__ == "SilentException":
+                return _empty_plot("Run statistics first")
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_volcano: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_lipid_box():
+        print("DEBUG: plt_lipid_box render called", flush=True)
+        if plot_metadata["plt_lipid_box"]["gated"] and not _cohort_confirmed():
+            return _empty_plot("Replicate structure unconfirmed")
+        try:
+            return plot_registry["plt_lipid_box"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_lipid_box: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.plot
+    def plt_rep_corr():
+        print("DEBUG: plt_rep_corr render called", flush=True)
+        if not _cohort_confirmed():
+            return _empty_plot("Confirm cohort mapping first")
+        if not _qc_run():
+            return _empty_plot("Click 'Run QC' above to generate correlation matrix")
+        try:
+            return plot_registry["plt_rep_corr"]()
+        except Exception as e:
+            import sys, traceback
+            print(f"CRASH IN PLOT plt_rep_corr: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            return _empty_plot(f"Error rendering: {e}")
+
+    @render.ui
+    def lipid_select_ui():
+        print("DEBUG: lipid_select_ui render called", flush=True)
+        dp = df_p()
+        if dp.empty:
+            return ui.p("Upload data first.", class_="text-muted")
+        if "Sample Name" in dp.columns:
+            choices = sorted(dp["Sample Name"].unique().tolist())
+        else:
+            choices = sorted(dp.index.tolist())
+        return ui.input_selectize(
+            "selected_lipid", "Select Lipid:", choices=choices,
+            selected=choices[0] if choices else None
+        )
+
     for plot_id in plot_registry.keys():
         output(make_toolbar_renderer(plot_id), id=f"tb_{plot_id}")
         output(make_download_handler(plot_id, "png300", 300), id=f"dl_{plot_id}_png300")
@@ -2427,12 +2623,14 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     # Register ZIP downloads for all 6 tabs
     tabs_plots = {
-        "pca": ["plt_pca_var", "plt_pca_2d", "plt_pca_3d", "plt_pca_ellipse"],
+        "pca": ["plt_pca_var", "plt_pca_2d", "plt_pca_3d", "plt_pca_ellipse", "plt_pca_scree", "plt_pca_loadings", "plt_pca_dendro", "plt_rep_corr"],
         "cl": ["plt_cl_kde", "plt_cl_zscore", "plt_cl_corr", "plt_cl_prop", "plt_cl_fc", "plt_cl_gauss", "plt_odd_chain", "plt_odd_cl_kde", "plt_cl_ge50", "plt_cl_le30", "plt_cl_le20"],
         "us": ["plt_us_kde", "plt_us_zscore", "plt_us_corr", "plt_us_prop", "plt_us_fc", "plt_us_sat", "plt_us_mono", "plt_us_poly"],
         "hg": ["plt_hg_donut", "plt_hg_zscore", "plt_hg_corr", "plt_hg_fc", "plt_hg_prop", "plt_hg_bar"],
         "lc": ["plt_lc_pie", "plt_lc_zscore", "plt_lc_prop", "plt_lc_fc"],
-        "sg": ["plt_sg_madag_prop", "plt_sg_madag_fc", "plt_sg_madag_z", "plt_sg_sph_prop", "plt_sg_sph_fc", "plt_sg_sph_z"]
+        "sg": ["plt_sg_madag_prop", "plt_sg_madag_fc", "plt_sg_madag_z", "plt_sg_sph_prop", "plt_sg_sph_fc", "plt_sg_sph_z"],
+        "stat": ["plt_volcano"],
+        "lipid": ["plt_lipid_box"],
     }
     
     for tname, pids in tabs_plots.items():
